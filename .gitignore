@@ -3,6 +3,7 @@ build/
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/sdkconfig.secret
 firmware/managed_components/
 firmware/dependencies.lock
 
