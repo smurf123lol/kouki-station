@@ -2,9 +2,9 @@
  * Kouki Station — голосовая станция Kouki.
  *
  * Порядок инициализации повторяет заводской пример Waveshare:
- * EXIO (расширитель GPIO) → LCD (QSPI, ST77916) → LVGL → аудио-борда.
- * Аудио инициализируется после экрана, чтобы кодек ES8311/ES7210 не мешал
- * поднятию QSPI-шины: у платы они делят I2C, но разные тайминги.
+ * аудио-борда (создаёт I2C и кодек) → EXIO (расширитель GPIO) → LCD (QSPI,
+ * ST77916) → LVGL. Аудио раньше экрана, потому что расширитель GPIO и тач
+ * живут на I2C, который поднимает именно аудио-борда.
  */
 #include "app_ui.h"
 #include "app_voice.h"
@@ -29,6 +29,16 @@ static void wifi_task(void *arg)
 
     if (kouki_wifi_connect() == ESP_OK) {
         ESP_LOGI(TAG, "сеть готова, сервер %s", CONFIG_KOUKI_SERVER_URL);
+#if CONFIG_KOUKI_SELFTEST
+        /* Самопроверка: без человека понятно, доходит ли запись до сервера. */
+        ESP_LOGW(TAG, "самопроверка: пишу %d с и отправляю", CONFIG_KOUKI_SELFTEST_SECONDS);
+        if (kouki_voice_start_recording() == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_SELFTEST_SECONDS * 1000));
+            kouki_voice_stop_and_send();
+        } else {
+            ESP_LOGE(TAG, "самопроверка: запись не началась");
+        }
+#endif
     } else {
         ESP_LOGE(TAG, "без сети: кнопка будет отвечать ошибкой отправки");
     }
@@ -46,13 +56,13 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     /*
-     * Порядок как в заводском примере: расширитель GPIO → аудио-борда (он же
-     * поднимает I2C и кодек) → LCD → LVGL. Аудио раньше экрана, потому что
-     * кодек ES8311 сидит на том же I2C, что и ST77916, и должен быть готов
-     * до первого обращения к дисплею.
+     * Порядок строго как в заводском примере: сначала аудио-борда — она создаёт
+     * I2C-шину (i2c_new_master_bus), без которой TCA9554PWR не может открыть
+     * устройство; потом расширитель GPIO (через него сбрасываются LCD и тач),
+     * затем LCD и LVGL.
      */
-    EXIO_Init();
     ESP_ERROR_CHECK(esp_board_init(16000, 2, 16));
+    EXIO_Init();
     LCD_Init();
     LVGL_Init();
 

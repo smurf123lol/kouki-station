@@ -1,4 +1,4 @@
-# Прошивка Kouki Station.
+﻿# Прошивка Kouki Station.
 #
 #   powershell -File tools/flash.ps1 -Port COM3
 #

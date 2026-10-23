@@ -48,7 +48,21 @@ menu "Kouki Station"
 
     menu "Запись"
 
-        config KOUKI_MAX_RECORD_S
+        config KOUKI_SELFTEST
+        bool "Самопроверка при старте"
+        default n
+        help
+            После подключения к Wi-Fi станция сама записывает несколько секунд
+            и отправляет их на сервер. Нужна, чтобы проверить тракт без нажатия
+            кнопки: слышен ли микрофон, проходит ли запрос, что отвечает сервер.
+            В обычной прошивке выключена.
+
+    config KOUKI_SELFTEST_SECONDS
+        int "Длительность самопроверки, с"
+        default 5
+        range 1 15
+        depends on KOUKI_SELFTEST
+    config KOUKI_MAX_RECORD_S
             int "Максимальная длительность записи, секунд"
             default 15
             range 2 60

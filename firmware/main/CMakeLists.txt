@@ -29,4 +29,5 @@ idf_component_register(
         nvs_flash
         json
         audio_board
+        espressif__esp_codec_dev
 )

@@ -21,3 +21,8 @@ firmware/dependencies.lock
 # ОС
 Thumbs.db
 .DS_Store
+# временные файлы idf.py (создаются в каталоге запуска)
+tmp*idf_*
+# данные стенда: база, аудио и превью-файлы, полученные при проверке
+station-db/
+station-audio/

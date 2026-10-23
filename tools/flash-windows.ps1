@@ -1,4 +1,4 @@
-# Прошивка Kouki Station на Windows без установленного ESP-IDF.
+﻿# Прошивка Kouki Station на Windows без установленного ESP-IDF.
 #
 # Сборка делается в контейнере (tools/build.ps1), а запись в плату — здесь,
 # через esptool: Docker на Windows не умеет отдавать COM-порт Linux-контейнеру.
