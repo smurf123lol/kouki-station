@@ -1,0 +1,29 @@
+# Настройки под esp32s3 с 8 МБ PSRAM (Octal) и 16 МБ Flash — как у ESP32-S3-Touch-LCD-1.85C V2.
+CONFIG_IDF_TARGET="esp32s3"
+
+# PSRAM: буфер записи голоса живёт в PSRAM, 15 секунд 16 кГц моно — это ~480 КБ.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Кэш по 64 байта — рекомендация Waveshare для ST77916 (QSPI + DMA).
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# USB-Serial-JTAG — штатный порт у этой платы.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# LVGL 8.3: нужны те же опции, что в примерах Waveshare, иначе LVGL_Driver их не находит.
+CONFIG_LV_COLOR_16_SWAP=y
+CONFIG_LV_USE_USER_DATA=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+
+# Партиции: один большой app под 4 МБ + данные.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

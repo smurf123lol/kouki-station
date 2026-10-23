@@ -1,0 +1,70 @@
+menu "Kouki Station"
+
+    menu "Wi-Fi"
+
+        config KOUKI_WIFI_SSID
+            string "SSID сети"
+            default "home"
+            help
+                Имя сети, к которой станция подключается при старте.
+                Пароль и адрес сервера — отдельными пунктами ниже.
+
+        config KOUKI_WIFI_PASSWORD
+            string "Пароль сети"
+            default ""
+
+        config KOUKI_WIFI_TIMEOUT_S
+            int "Сколько секунд ждать подключения"
+            default 25
+            range 5 120
+
+    endmenu
+
+    menu "Сервер Kouki"
+
+        config KOUKI_SERVER_URL
+            string "Адрес сервера (полный, включая схему и порт)"
+            default "http://192.168.1.49:5300"
+            help
+                Пример: http://192.168.1.49:5300 — станция обратится
+                к POST <адрес>/api/voice.
+
+        config KOUKI_SERVER_TOKEN
+            string "Bearer-токен"
+            default ""
+            help
+                Значение поля Kouki__Token на сервере. Пустая строка —
+                запрос уйдёт без заголовка Authorization (сервер ответит 401,
+                если токен у него задан).
+
+        config KOUKI_SOURCE
+            string "Метка источника"
+            default "station"
+            help
+                Попадает в ?source= и в поле source записи приёма.
+                По этой метке в tasks/actions видно, что фраза пришла со станции.
+
+    endmenu
+
+    menu "Запись"
+
+        config KOUKI_MAX_RECORD_S
+            int "Максимальная длительность записи, секунд"
+            default 15
+            range 2 60
+            help
+                Буфер под запись выделяется сразу под этот максимум:
+                KOUKI_MAX_RECORD_S × 16000 × 2 байта (15 с ≈ 480 КБ в PSRAM).
+
+        config KOUKI_MIC_CHANNEL
+            int "Канал микрофона в потоке ES7210 (0..3)"
+            default 1
+            range 0 3
+            help
+                BSP отдаёт четыре канала; в bsp_get_feed_data микрофоны — это
+                индексы 1 и 3, индекс 0 — опорный сигнал эхоподавления.
+                По умолчанию берём первый микрофон (индекс 1).
+
+    endmenu
+
+endmenu

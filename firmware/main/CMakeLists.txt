@@ -1,0 +1,32 @@
+idf_component_register(
+    SRCS
+        "./main.c"
+        "./app_wifi.c"
+        "./app_voice.c"
+        "./app_ui.c"
+        # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md
+        "./drivers/exio/TCA9554PWR.c"
+        "./drivers/lcd/esp_lcd_st77916/esp_lcd_st77916.c"
+        "./drivers/lcd/ST77916.c"
+        "./drivers/touch/esp_lcd_touch/esp_lcd_touch.c"
+        "./drivers/touch/CST816.c"
+        "./drivers/lvgl/LVGL_Driver.c"
+    INCLUDE_DIRS
+        "."
+        "./drivers/exio"
+        "./drivers/lcd"
+        "./drivers/lcd/esp_lcd_st77916"
+        "./drivers/touch"
+        "./drivers/touch/esp_lcd_touch"
+        "./drivers/lvgl"
+    REQUIRES
+        driver
+        esp_lcd
+        esp_http_client
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        json
+        audio_board
+)

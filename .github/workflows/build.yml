@@ -1,0 +1,47 @@
+name: build
+
+# Собираем только прошивку: репозиторий содержит лишь firmware/ и документацию,
+# поэтому один контейнер ESP-IDF и никаких матриц.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'firmware/**'
+      - 'tools/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:5.5.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Сборка
+        shell: bash
+        working-directory: firmware
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Размер прошивки
+        shell: bash
+        working-directory: firmware
+        run: |
+          ls -la build/*.bin
+          idf.py size || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kouki-station-firmware
+          path: |
+            firmware/build/kouki_station.bin
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+          if-no-files-found: warn

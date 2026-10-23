@@ -1,0 +1,22 @@
+# Сборка
+build/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+
+# Инструменты
+.vscode/
+.idea/
+*.code-workspace
+
+# Прошивка и образы
+*.bin
+*.elf
+*.map
+*.uf2
+
+# ОС
+Thumbs.db
+.DS_Store
