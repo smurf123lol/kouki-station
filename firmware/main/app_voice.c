@@ -128,7 +128,7 @@ static void record_task(void *arg)
     }
 }
 
-static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len)
+static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out)
 {
     char url[192];
     snprintf(url, sizeof(url), "%s/api/voice?source=%s", CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
@@ -182,6 +182,9 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
+    if (status_out) {
+        *status_out = status;
+    }
     if (err != ESP_OK) {
         return err;
     }
@@ -218,6 +221,9 @@ static void parse_response(const char *json, kouki_voice_result_t *out)
 
     const cJSON *intake = cJSON_GetObjectItemCaseSensitive(root, "intake");
     const char *err = json_string(root, "error");
+
+    copy_str(out->transcript, sizeof(out->transcript), json_string(root, "transcript"));
+    out->has_transcript = out->transcript[0] != '\0';
 
     if (err) {
         copy_str(out->error, sizeof(out->error), err);
@@ -258,7 +264,8 @@ static void send_task(void *arg)
     publish(KOUKI_VOICE_SENDING, &result);
 
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
-    const esp_err_t err = http_post_wav(s_buf, WAV_HEADER_SIZE + s_sample_bytes, response, sizeof(response));
+    const esp_err_t err = http_post_wav(s_buf, WAV_HEADER_SIZE + s_sample_bytes, response, sizeof(response),
+                                       &result.http_status);
     if (err != ESP_OK && response[0] == '\0') {
         copy_str(result.error, sizeof(result.error),
                  err == ESP_ERR_INVALID_RESPONSE ? "Сервер ответил ошибкой" : "Сервер недоступен");
@@ -268,6 +275,9 @@ static void send_task(void *arg)
     }
 
     parse_response(response, &result);
+    if (result.error[0] == '\0' && err == ESP_ERR_INVALID_RESPONSE) {
+        copy_str(result.error, sizeof(result.error), "Сервер ответил ошибкой");
+    }
     if (result.error[0] != '\0') {
         publish(KOUKI_VOICE_ERROR, &result);
     } else {
