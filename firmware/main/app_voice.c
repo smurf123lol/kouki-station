@@ -131,7 +131,9 @@ static void record_task(void *arg)
 static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out)
 {
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/voice?source=%s", CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
+        // intent=add_task — сессия «запись»: сервер не разбирает фразу, а берёт её задачей целиком.
+    snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=%s",
+             CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE, "add_task");
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -324,6 +326,33 @@ esp_err_t kouki_voice_start_recording(void)
     return ESP_OK;
 }
 
+/// <summary>
+/// Проверяет, есть ли в записи голос. На тишине распознаватель выдаёт галлюцинации
+/// вроде «(звук пилот)», и они попадают в задачи, поэтому слишком тихое не отправляем.
+/// </summary>
+static bool IsLoudEnough(void)
+{
+    const size_t samples = s_sample_bytes / BYTES_PER_SAMPLE;
+    if (samples == 0) {
+        return false;
+    }
+
+    const int16_t *pcm = (const int16_t *)(s_buf + WAV_HEADER_SIZE);
+    uint64_t sum = 0;
+    size_t checked = 0;
+
+    // Каждый четвёртый сэмпл: на 15 секундах это 60 000 проверок — для оценки хватает.
+    for (size_t i = 0; i < samples; i += 4) {
+        int32_t value = pcm[i];
+        sum += (uint64_t)(value < 0 ? -value : value);
+        checked++;
+    }
+
+    const uint64_t mean = checked ? sum / checked : 0;
+    ESP_LOGI(TAG, "средняя амплитуда записи: %u", (unsigned)mean);
+    return mean >= CONFIG_KOUKI_MIN_AMPLITUDE;
+}
+
 esp_err_t kouki_voice_stop_and_send(void)
 {
     if (s_state != KOUKI_VOICE_RECORDING) {
@@ -331,9 +360,12 @@ esp_err_t kouki_voice_stop_and_send(void)
     }
 
     s_recording = false;
-    if (s_sample_bytes == 0) {
+    if (s_sample_bytes == 0 || !IsLoudEnough()) {
         kouki_voice_result_t result = {0};
-        copy_str(result.error, sizeof(result.error), "Тишина: ничего не записалось");
+        copy_str(result.error, sizeof(result.error),
+                  s_sample_bytes == 0
+                      ? "Тишина: ничего не записалось"
+                      : "Тишина: слишком тихо, повторите ближе к микрофону");
         publish(KOUKI_VOICE_ERROR, &result);
         return ESP_OK;
     }

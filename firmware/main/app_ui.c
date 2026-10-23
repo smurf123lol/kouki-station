@@ -62,7 +62,7 @@ static void ui_tick(lv_timer_t *timer)
     switch (state) {
     case KOUKI_VOICE_IDLE:
         set_status(kouki_wifi_is_connected() ? "Нажмите и говорите" : "Нет сети", COLOR_DIM);
-        lv_label_set_text(s_button_label, "Спросить");
+        lv_label_set_text(s_button_label, "Записать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
         break;
 
@@ -106,7 +106,7 @@ static void ui_tick(lv_timer_t *timer)
             lv_label_set_text(s_answer, text);
         }
 
-        lv_label_set_text(s_button_label, "Спросить");
+        lv_label_set_text(s_button_label, "Записать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
         break;
     }
@@ -142,7 +142,7 @@ void kouki_ui_init(void)
     lv_obj_add_event_cb(s_button, on_button_clicked, LV_EVENT_CLICKED, NULL);
 
     s_button_label = lv_label_create(s_button);
-    lv_label_set_text(s_button_label, "Спросить");
+    lv_label_set_text(s_button_label, "Записать");
     lv_obj_set_style_text_color(s_button_label, lv_color_hex(COLOR_INK), 0);
     lv_obj_set_style_text_font(s_button_label, &font_ru_20, 0);
     lv_obj_center(s_button_label);
