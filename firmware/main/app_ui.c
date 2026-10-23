@@ -7,6 +7,14 @@
 #include "esp_log.h"
 #include "lvgl.h"
 
+/*
+ * Шрифты с кириллицей: во встроенных montserrat её нет, поэтому 14/16/20
+ * собраны lv_font_conv из Arial (см. main/ui и docs/build.md).
+ */
+LV_FONT_DECLARE(font_ru_14);
+LV_FONT_DECLARE(font_ru_16);
+LV_FONT_DECLARE(font_ru_20);
+
 static const char *TAG = "kouki.ui";
 
 /* Палитра та же, что у дашборда: бумага, чернила, вермильон. */
@@ -114,14 +122,14 @@ void kouki_ui_init(void)
     lv_label_set_text(title, "K O U K I");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_SAND), 0);
     lv_obj_set_style_text_letter_space(title, 4, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, &font_ru_20, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 28);
 
     s_status = lv_label_create(scr);
     lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_status, 300);
     lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_status, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_status, &font_ru_16, 0);
     set_status("Подключаюсь…", COLOR_DIM);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 62);
 
@@ -136,7 +144,7 @@ void kouki_ui_init(void)
     s_button_label = lv_label_create(s_button);
     lv_label_set_text(s_button_label, "Спросить");
     lv_obj_set_style_text_color(s_button_label, lv_color_hex(COLOR_INK), 0);
-    lv_obj_set_style_text_font(s_button_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_button_label, &font_ru_20, 0);
     lv_obj_center(s_button_label);
 
     s_answer = lv_label_create(scr);
@@ -145,7 +153,7 @@ void kouki_ui_init(void)
     lv_label_set_text(s_answer, "");
     lv_obj_set_style_text_align(s_answer, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_answer, lv_color_hex(COLOR_SAND), 0);
-    lv_obj_set_style_text_font(s_answer, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_answer, &font_ru_14, 0);
     lv_obj_align(s_answer, LV_ALIGN_BOTTOM_MID, 0, -40);
 
     lv_timer_create(ui_tick, 250, NULL);

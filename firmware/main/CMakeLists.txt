@@ -11,6 +11,10 @@ idf_component_register(
         "./drivers/touch/esp_lcd_touch/esp_lcd_touch.c"
         "./drivers/touch/CST816.c"
         "./drivers/lvgl/LVGL_Driver.c"
+        # Шрифты с кириллицей, сгенерированы lv_font_conv из Arial
+        "./ui/font_ru_14.c"
+        "./ui/font_ru_16.c"
+        "./ui/font_ru_20.c"
     INCLUDE_DIRS
         "."
         "./drivers/exio"
@@ -19,6 +23,7 @@ idf_component_register(
         "./drivers/touch"
         "./drivers/touch/esp_lcd_touch"
         "./drivers/lvgl"
+        "./ui"
     REQUIRES
         driver
         esp_lcd
