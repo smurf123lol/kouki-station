@@ -102,3 +102,25 @@ firmware/build/kouki_station.bin
 ```
 
 Прошивка: `tools/flash-windows.ps1 -Port COM3` (bootloader `0x0`, partitions `0x8000`, приложение `0x10000`).
+
+## Wake-word и раздел моделей
+
+Модель кодового слова — не файл в приложении, а содержимое flash-партиции
+`model` (`partitions.csv`, 2 МБ). `esp_srmodel_init("model")` мапит раздел,
+поэтому одной `idf.py flash` мало: рядом с `kouki_station.bin` нужен
+`build/srmodels/srmodels.bin` на адрес раздела (`0x410000`). `tools/flash-windows.ps1`
+пишет оба файла сам; если `srmodels.bin` не собрался — предупредит и прошьёт без
+моделей (станция поднимется, но кодовое слово будет недоступно).
+
+Что ломалось:
+
+1. `E Conv: no Conv kernel for packed key 0x0202` — esp-dl собирает только ядра,
+   перечисленные в `compile_req`-файлах компонентов, а esp-sr не указал
+   `dl_tie728_w8a16_conv2d_11cn`. Лечение: свой `firmware/main/kouki-dl-req.yml`
+   (ops esp-sr + это ядро) и регистрация через `esp_dl_compile_add_yml`.
+2. `UnicodeEncodeError: 'charmap'` при упаковке моделей — скрипт печатает китайские
+   имена. Лечение: `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8` в `build-native.ps1`.
+3. `sdkconfig.secret` с BOM: kconfgen пишет `ignoring malformed line` и теряет
+   Wi-Fi/токен. Файл должен быть UTF-8 **без BOM**.
+4. Новая опция `Kconfig.projbuild` не появляется в уже собранном `sdkconfig` —
+   удалить `firmware/sdkconfig` (иначе `CONFIG_KOUKI_WAKE_PARTITION` не определён).
