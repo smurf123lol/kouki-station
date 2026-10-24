@@ -14,11 +14,15 @@ on:
       - 'firmware/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   firmware:
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:5.5.1
+      # Тег обязан начинаться с v: espressif/idf:5.5.1 не существует.
+      image: espressif/idf:v5.5.1
     steps:
       - uses: actions/checkout@v4
 
@@ -29,13 +33,19 @@ jobs:
           . $IDF_PATH/export.sh
           idf.py set-target esp32s3
           idf.py build
+        # Секретов (Wi-Fi, токен сервера) в CI нет: sdkconfig.secret не коммитится,
+        # поэтому собирается сборка без них — она проверяет только компиляцию.
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: utf-8
 
       - name: Размер прошивки
         shell: bash
         working-directory: firmware
         run: |
+          . $IDF_PATH/export.sh
           ls -la build/*.bin
-          idf.py size || true
+          idf.py size
 
       - uses: actions/upload-artifact@v4
         with:
@@ -44,4 +54,4 @@ jobs:
             firmware/build/kouki_station.bin
             firmware/build/bootloader/bootloader.bin
             firmware/build/partition_table/partition-table.bin
-          if-no-files-found: warn
+          if-no-files-found: error
