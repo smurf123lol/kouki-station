@@ -14,7 +14,7 @@
     Для синтеза нужен Kouki.SpeechLab, собранный с -p:KoukiEnableSherpa=true.
 
 .EXAMPLE
-    .\tools\e2e-station.ps1 -Server http://127.0.0.1:5300 -Token kouki-demo
+    $env:KOUKI_TOKEN = 'ваш-токен'; .\tools\e2e-station.ps1 -Server http://127.0.0.1:5300
 
 .EXAMPLE
     .\tools\e2e-station.ps1 -Phrase "Сколько минут варить пельмени?" -Intent ask
