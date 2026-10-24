@@ -66,6 +66,9 @@ esp_err_t kouki_voice_start_recording(void);
 /* Остановить запись и отправить накопленное на сервер (асинхронно). */
 esp_err_t kouki_voice_stop_and_send(void);
 
+/* Диагностика: печатает уровень каждого канала входа. */
+void kouki_voice_debug_levels(void);
+
 bool kouki_voice_is_recording(void);
 
 /* Текущее состояние — для отрисовки из LVGL-таймера. */

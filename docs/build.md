@@ -124,3 +124,25 @@ firmware/build/kouki_station.bin
    Wi-Fi/токен. Файл должен быть UTF-8 **без BOM**.
 4. Новая опция `Kconfig.projbuild` не появляется в уже собранном `sdkconfig` —
    удалить `firmware/sdkconfig` (иначе `CONFIG_KOUKI_WAKE_PARTITION` не определён).
+## Сервер для станции должен уметь распознавать речь
+
+Если станция показывает «распознавание речи ещё не подключено», это ответ сервера
+`503` из `UnavailableSpeechTranscriber`: сервер собран без `sherpa-onnx`.
+
+```powershell
+dotnet build Kagedama.api -p:KoukiEnableSherpa=true
+$env:Kouki__SpeechModelDirectory='…\models\asr\sherpa-onnx-whisper-small'
+$env:Kouki__SpeechLanguage='ru'
+```
+
+Обычный `dotnet build` (и `dotnet test`) собирает без флага намеренно: пакет
+`sherpa-onnx` тянет нативные библиотеки, и без модели приложение должно
+оставаться работоспособным, просто без голоса.
+
+## Микрофон и усиление
+
+Микрофоны платы тихие: средняя амплитуда речи — 130–310 из 32767 даже с PGA 30 дБ.
+Поэтому в прошивке есть цифровое усиление `CONFIG_KOUKI_MIC_GAIN` (по умолчанию 6,
+мягкий клиппинг) и порог «есть ли речь» `CONFIG_KOUKI_MIN_AMPLITUDE` (120).
+Проверить уровни на месте: включить `CONFIG_KOUKI_DEBUG_MIC` — при загрузке и
+дальше раз в 6 секунд печатаются средние уровни всех каналов входа.

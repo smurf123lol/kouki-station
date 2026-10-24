@@ -29,6 +29,15 @@ static void wifi_task(void *arg)
 
     if (kouki_wifi_connect() == ESP_OK) {
         ESP_LOGI(TAG, "сеть готова, сервер %s", CONFIG_KOUKI_SERVER_URL);
+#if CONFIG_KOUKI_DEBUG_MIC
+    /* Диагностика входа: раз в 6 секунд печатаем уровни, чтобы можно было
+     * поговорить в этот момент и увидеть, какой канал живой. */
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(6000));
+        kouki_voice_debug_levels();
+    }
+#endif
+
 #if CONFIG_KOUKI_SELFTEST
         /* Самопроверка: без человека понятно, доходит ли запись до сервера. */
         ESP_LOGW(TAG, "самопроверка: пишу %d с и отправляю", CONFIG_KOUKI_SELFTEST_SECONDS);
