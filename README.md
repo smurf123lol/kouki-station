@@ -6,6 +6,9 @@
 распознавание (sherpa-onnx на сервере), классификатор интента, диспетчер команд,
 SQLite и журнал действий.
 
+> **Правила работы:** инварианты прошивки (один владелец I2S, сессии, Kconfig, секреты) —
+> [AGENTS.md](AGENTS.md); рабочий цикл и definition of done — [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Железо
 
 - **Waveshare ESP32-S3-Touch-LCD-1.85C, ревизия 2**: ESP32-S3R8, 16 МБ flash,
