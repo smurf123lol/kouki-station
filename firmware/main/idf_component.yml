@@ -2,3 +2,5 @@ dependencies:
   idf: ">=5.5"
   # Тот же LVGL, что в примерах Waveshare: их LVGL_Driver написан под 8.3 API.
   lvgl/lvgl: "~8.3.0"
+  # Wake-word: готовые модели распознавания слова (шаг A, T17).
+  espressif/esp-sr: "^2.6.0"

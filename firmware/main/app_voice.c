@@ -136,13 +136,13 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
     /*
      * Сессия задаёт смысл записи, а не сервер угадывает его по словам:
      * «Записать» -> intent=add_task (фраза становится задачей целиком),
-     * «Спросить» -> intent не передаётся, фразу разбирает классификатор.
+     * «Спросить» -> intent=ask (фраза становится вопросом, ответ ляжет в задачу).
      */
     if (s_session == KOUKI_SESSION_TASK) {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
                  CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
     } else {
-        snprintf(url, sizeof(url), "%s/api/voice?source=%s",
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask",
                  CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
     }
 
@@ -255,6 +255,16 @@ static void parse_response(const char *json, kouki_voice_result_t *out)
             copy_str(out->task_title, sizeof(out->task_title), json_string(task, "title"));
             copy_str(out->task_status, sizeof(out->task_status), json_string(task, "status"));
         }
+
+        /* Ответ ассистента (сессия «Спросить»): лежит в result.answer. */
+        const cJSON *result = cJSON_GetObjectItemCaseSensitive(intake, "result");
+        if (cJSON_IsObject(result)) {
+            copy_str(out->answer, sizeof(out->answer), json_string(result, "answer"));
+            if (out->task_title[0] == '\0') {
+                copy_str(out->task_title, sizeof(out->task_title), json_string(result, "question"));
+            }
+        }
+
         const char *intake_error = json_string(intake, "error");
         if (intake_error && out->error[0] == '\0') {
             copy_str(out->error, sizeof(out->error), intake_error);

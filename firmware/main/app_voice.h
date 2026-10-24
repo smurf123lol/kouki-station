@@ -36,11 +36,12 @@ typedef enum {
 typedef struct {
     bool has_transcript;
     char transcript[192];   /* что услышал сервер */
-    char intent[48];        /* add_task / list_tasks / complete_task / ... */
+    char intent[48];        /* add_task / list_tasks / complete_task / ask */
     char outcome[24];       /* created / executed / needs_review / failed */
     char task_title[128];   /* заголовок задачи, если она появилась */
     char task_status[24];
     char command[48];       /* имя исполненной команды */
+    char answer[192];       /* ответ ассистента, если команда его вернула (ask) */
     char error[160];        /* текст ошибки для показа */
     int  http_status;       /* код ответа, 0 если запрос не дошёл */
     uint32_t duration_ms;   /* сколько длилась запись */

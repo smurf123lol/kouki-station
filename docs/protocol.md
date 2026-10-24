@@ -12,7 +12,7 @@
 | Кнопка | Параметр `intent` | Поведение сервера |
 | --- | --- | --- |
 | Записать | `add_task` | фраза становится задачей целиком, классификатор не участвует |
-| Спросить | — (не передаётся) | фраза идёт в классификатор: `list_tasks`, `complete_task`, иначе «на разбор» |
+| Спросить | `ask` | вопрос сохраняется задачей, ответ команды `ask` ложится в `meta.answer` (пока заглушка) |
 
 `kouki_voice_set_session()` вызывается до старта записи; во время записи или
 отправки смена сессии возвращает `ESP_ERR_INVALID_STATE`.
@@ -20,7 +20,7 @@
 ## Запрос
 
 ```
-POST {KOUKI_SERVER_URL}/api/voice?source={KOUKI_SOURCE}[&intent=add_task]
+POST {KOUKI_SERVER_URL}/api/voice?source={KOUKI_SOURCE}[&intent=add_task|ask]
 Authorization: Bearer {KOUKI_SERVER_TOKEN}
 Content-Type: audio/wav
 
@@ -67,7 +67,8 @@ Content-Type: audio/wav
 | --- | --- | --- |
 | `transcript` | что услышали | в кавычках мелким шрифтом |
 | `intake.outcome` | `created` / `executed` / `needs_review` / `failed` | «Задача записана» / «Готово» / «На разбор» |
-| `intake.task.title` | заголовок новой задачи | «Задача: …» |
+| `intake.task.title` | заголовок новой задачи | «Задача: …» (у вопроса — `result.question`) |
+| `intake.result.answer` | ответ ассистента на вопрос | статус «Ответ» + текст |
 | `intake.command` | имя команды, если исполнялась | «Команда: …» |
 | `intake.error` / `error` | причина отказа | «Не вышло» + текст |
 

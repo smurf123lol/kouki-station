@@ -120,20 +120,25 @@ static void ui_tick(lv_timer_t *timer)
             lv_label_set_text(s_answer, text);
         } else {
             const char *outcome = result.outcome[0] ? result.outcome : "executed";
-            set_status(strcmp(outcome, "created") == 0   ? "Задача записана"
-                       : strcmp(outcome, "executed") == 0 ? "Готово"
+            const bool has_answer = result.answer[0] != '\0';
+            set_status(has_answer                          ? "Ответ"
+                       : strcmp(outcome, "created") == 0   ? "Задача записана"
+                       : strcmp(outcome, "executed") == 0  ? "Готово"
                        : "На разбор", COLOR_OK);
 
             if (result.has_transcript && result.transcript[0] != '\0') {
                 used += (size_t)snprintf(text + used, sizeof(text) - used, "«%s»\n", result.transcript);
             }
-            if (result.task_title[0] != '\0') {
+            if (has_answer) {
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "%s", result.answer);
+            } else if (result.task_title[0] != '\0') {
                 used += (size_t)snprintf(text + used, sizeof(text) - used, "Задача: %s", result.task_title);
             } else if (result.command[0] != '\0') {
                 used += (size_t)snprintf(text + used, sizeof(text) - used, "Команда: %s", result.command);
             } else if (result.intent[0] != '\0') {
                 used += (size_t)snprintf(text + used, sizeof(text) - used, "Интент: %s", result.intent);
             }
+            (void)used;
             lv_label_set_text(s_answer, text);
         }
 
