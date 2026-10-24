@@ -33,10 +33,12 @@ foreach ($f in @($bootloader, $partitions, $app)) {
 }
 
 $modelArgs = @()
-if (Test-Path $srmodels) {
+# Пустой srmodels.bin (~4 байта) появляется, когда модель не выбрана в menuconfig:
+# это не модель, а заглушка упаковщика. Пишем в flash только настоящий файл.
+if ((Test-Path $srmodels) -and ((Get-Item $srmodels).Length -gt 1024)) {
     $modelArgs = @('0x410000', $srmodels)
 } else {
-    Write-Host 'srmodels.bin не найден: прошиваю без раздела моделей (wake-word не заработает)' -ForegroundColor Yellow
+    Write-Host 'srmodels.bin нет (wake-word выключен): прошиваю без раздела моделей' -ForegroundColor Yellow
 }
 
 if ($EsptoolPath -and (Test-Path $EsptoolPath)) {

@@ -410,6 +410,11 @@ static void send_task(void *arg)
         publish(KOUKI_VOICE_DONE, &result);
     }
 
+    /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
+    ESP_LOGI(TAG, "отправка: err=%s, HTTP %d, %s, услышали: %.120s",
+             esp_err_to_name(err), result.http_status,
+             result.error[0] != '\0' ? result.error : "ок", result.transcript);
+
     vTaskDelete(NULL);
 }
 

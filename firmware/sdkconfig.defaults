@@ -28,8 +28,13 @@ CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Wake-word: пока берём готовое «Hi ESP» (wn10_hiesp, ~1 МБ) — она даёт
-# проверяемый тракт «услышали слово → записали → отправили».
-# Своё русское слово требует обучения в Espressif и появится отдельной задачей.
+# Wake-word по умолчанию ВЫКЛЮЧЕН (KOUKI_WAKE_ENABLED=n в Kconfig):
+# детектору нужна модель в отдельной flash-партиции (~1 МБ), подобранный порог
+# и понимание, что станция может сработать от чужого «Hi ESP».
+#
+# Включить кодовое слово — дописать в sdkconfig.secret (он не в git):
+#   CONFIG_MODEL_IN_FLASH=y
+#   CONFIG_SR_WN_WN10_HIESP=y
+#   CONFIG_KOUKI_WAKE_ENABLED=y
+# и прошивать вместе с srmodels.bin (tools/flash-windows.ps1 умеет).
 CONFIG_MODEL_IN_FLASH=y
-CONFIG_SR_WN_WN10_HIESP=y

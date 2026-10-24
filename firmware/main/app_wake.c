@@ -7,11 +7,28 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
+#if !defined(CONFIG_KOUKI_WAKE_ENABLED)
+/*
+ * Кодовое слово выключено в menuconfig: собираем заглушки, чтобы остальной код
+ * не зависел от #ifdef-ов, а конфигурация wake-word не обязана существовать.
+ */
+esp_err_t kouki_wake_init(void) { return ESP_ERR_NOT_SUPPORTED; }
+void kouki_wake_deinit(void) {}
+bool kouki_wake_is_ready(void) { return false; }
+const char *kouki_wake_model(void) { return "выключено"; }
+bool kouki_wake_feed(const int16_t *pcm, int samples)
+{
+    (void)pcm;
+    (void)samples;
+    return false;
+}
+
+#else
+
 // esp-sr: интерфейс wake-word и загрузка моделей из flash.
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
 #include "model_path.h"
-
 static const char *TAG = "kouki.wake";
 
 static srmodel_list_t *s_models;
@@ -139,3 +156,5 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
 
     return detected;
 }
+
+#endif // CONFIG_KOUKI_WAKE_ENABLED

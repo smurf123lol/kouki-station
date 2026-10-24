@@ -38,14 +38,26 @@ static void wifi_task(void *arg)
     }
 #endif
 
-#if CONFIG_KOUKI_SELFTEST
-        /* Самопроверка: без человека понятно, доходит ли запись до сервера. */
-        ESP_LOGW(TAG, "самопроверка: пишу %d с и отправляю", CONFIG_KOUKI_SELFTEST_SECONDS);
+#if CONFIG_KOUKI_TEST_MODE
+        /* Тестовый режим: проверка тракта без человека. Станция выжидает,
+         * пишет несколько секунд и отправляет фразу так же, как это сделала
+         * бы кнопка — тем же путём, с той же сессией. */
+        kouki_session_t session =
+#if CONFIG_KOUKI_TEST_MODE_AS_QUESTION
+            KOUKI_SESSION_ASK;
+#else
+            KOUKI_SESSION_TASK;
+#endif
+        kouki_voice_set_session(session);
+        ESP_LOGW(TAG, "тестовый режим: пауза %d с, запись %d с, отправлю как %s",
+                 CONFIG_KOUKI_TEST_MODE_DELAY_S, CONFIG_KOUKI_TEST_MODE_SECONDS,
+                 session == KOUKI_SESSION_ASK ? "вопрос" : "задачу");
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_TEST_MODE_DELAY_S * 1000));
         if (kouki_voice_start_recording() == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_SELFTEST_SECONDS * 1000));
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_TEST_MODE_SECONDS * 1000));
             kouki_voice_stop_and_send();
         } else {
-            ESP_LOGE(TAG, "самопроверка: запись не началась");
+            ESP_LOGE(TAG, "тестовый режим: запись не началась");
         }
 #endif
     } else {

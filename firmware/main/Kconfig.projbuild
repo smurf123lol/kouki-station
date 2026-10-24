@@ -50,13 +50,23 @@ menu "Kouki Station"
 
         config KOUKI_WAKE_ENABLED
             bool "Слушать кодовое слово в простое"
-            default y
+            default n
             help
                 Пока станция ничего не записывает, поток с микрофона идёт
                 в детектор esp-sr. Услышали слово — начинаем запись без касания.
                 Кнопки остаются рабочим путём: детектор может промолчать.
 
+                По умолчанию ВЫКЛЮЧЕНО: детектору нужна модель в отдельной
+                flash-партиции (~1 МБ) и подобранный порог, а без модели он
+                просто не поднимется и станция останется на кнопках.
+                Чтобы включить:
+                  1) в sdkconfig.defaults (или sdkconfig.secret) добавить
+                     CONFIG_SR_WN_WN10_HIESP=y и CONFIG_MODEL_IN_FLASH=y;
+                  2) здесь поставить y и, если нужно, имя модели;
+                  3) прошивать вместе с srmodels.bin (tools/flash-windows.ps1).
+
         config KOUKI_WAKE_MODEL
+            depends on KOUKI_WAKE_ENABLED
             string "Имя модели (пусто — первая найденная)"
             default ""
             help
@@ -64,6 +74,7 @@ menu "Kouki Station"
                 первую wake-word модель из esp-sr.
 
         config KOUKI_WAKE_PARTITION
+            depends on KOUKI_WAKE_ENABLED
             string "Партиция с моделями esp-sr"
             default "model"
             help
@@ -72,6 +83,7 @@ menu "Kouki Station"
                 и станция останется работать только по кнопке.
 
         config KOUKI_WAKE_THRESHOLD
+            depends on KOUKI_WAKE_ENABLED
             int "Порог срабатывания, проценты"
             default 60
             range 10 95
@@ -80,6 +92,7 @@ menu "Kouki Station"
                 приходится говорить громче. Настраивается по месту.
 
         config KOUKI_WAKE_RECORD_S
+            depends on KOUKI_WAKE_ENABLED
             int "Сколько секунд писать после кодового слова"
             default 6
             range 2 15
@@ -91,31 +104,17 @@ menu "Kouki Station"
 
     menu "Запись"
 
-        config KOUKI_SELFTEST
-        bool "Самопроверка при старте"
-        default n
-        help
-            После подключения к Wi-Fi станция сама записывает несколько секунд
-            и отправляет их на сервер. Нужна, чтобы проверить тракт без нажатия
-            кнопки: слышен ли микрофон, проходит ли запрос, что отвечает сервер.
-            В обычной прошивке выключена.
+        config KOUKI_MIN_AMPLITUDE
+            int "Минимальная средняя амплитуда записи"
+            range 0 3000
+            default 120
+            help
+                Средняя абсолютная амплитуда PCM16, ниже которой запись считается тишиной
+                и не отправляется на сервер. На тишине распознаватель выдаёт галлюцинации
+                вроде «(звук пилот)», и они попадают в задачи. Ориентир: фон комнаты
+                30–80, человек в полуметре после усиления — 800–2500.
 
-config KOUKI_MIN_AMPLITUDE
-        int "Минимальная средняя амплитуда записи"
-        range 0 3000
-        default 120
-        help
-            Средняя абсолютная амплитуда PCM16, ниже которой запись считается тишиной
-            и не отправляется на сервер. На тишине распознаватель выдаёт галлюцинации
-            вроде «(звук пилот)», и они попадают в задачи. 220 — примерно уровень
-            «человек говорит в полуметре», фон комнаты обычно 30-80.
-
-    config KOUKI_SELFTEST_SECONDS
-        int "Длительность самопроверки, с"
-        default 5
-        range 1 15
-        depends on KOUKI_SELFTEST
-    config KOUKI_MAX_RECORD_S
+        config KOUKI_MAX_RECORD_S
             int "Максимальная длительность записи, секунд"
             default 15
             range 2 60
@@ -131,6 +130,47 @@ config KOUKI_MIN_AMPLITUDE
                 BSP отдаёт четыре канала; в bsp_get_feed_data микрофоны — это
                 индексы 1 и 3, индекс 0 — опорный сигнал эхоподавления.
                 По умолчанию берём первый микрофон (индекс 1).
+
+    endmenu
+
+    menu "Тестовый режим"
+
+        config KOUKI_TEST_MODE
+            bool "Проверять тракт при загрузке без человека"
+            default n
+            help
+                После подключения к сети станция сама записывает несколько секунд
+                и отправляет их на сервер. Нужен, чтобы проверить тракт без нажатия
+                кнопки: слышен ли микрофон, проходит ли запрос, что отвечает сервер.
+                В обычной прошивке выключен — иначе станция отправит лишнюю фразу
+                при каждом включении.
+
+        config KOUKI_TEST_MODE_DELAY_S
+            int "Пауза после подключения к сети, с"
+            default 5
+            range 0 120
+            depends on KOUKI_TEST_MODE
+            help
+                Время, за которое можно успеть сказать фразу в микрофон.
+
+        config KOUKI_TEST_MODE_SECONDS
+            int "Сколько секунд писать в тестовом режиме"
+            default 5
+            range 1 15
+            depends on KOUKI_TEST_MODE
+
+        choice KOUKI_TEST_MODE_SESSION
+            prompt "С чем отправить тестовую запись"
+            default KOUKI_TEST_MODE_AS_TASK
+            depends on KOUKI_TEST_MODE
+
+            config KOUKI_TEST_MODE_AS_TASK
+                bool "Как задачу (intent=add_task)"
+
+            config KOUKI_TEST_MODE_AS_QUESTION
+                bool "Как вопрос (intent=ask)"
+
+        endchoice
 
     endmenu
 
