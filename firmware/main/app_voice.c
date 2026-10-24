@@ -24,6 +24,7 @@ static const char *TAG = "kouki.voice";
 static SemaphoreHandle_t s_lock;
 static kouki_voice_state_t s_state = KOUKI_VOICE_IDLE;
 static kouki_voice_result_t s_result;
+static kouki_session_t s_session = KOUKI_SESSION_TASK;
 
 static kouki_voice_event_cb_t s_cb;
 static void *s_cb_ctx;
@@ -131,9 +132,19 @@ static void record_task(void *arg)
 static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out)
 {
     char url[192];
-        // intent=add_task — сессия «запись»: сервер не разбирает фразу, а берёт её задачей целиком.
-    snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=%s",
-             CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE, "add_task");
+
+    /*
+     * Сессия задаёт смысл записи, а не сервер угадывает его по словам:
+     * «Записать» -> intent=add_task (фраза становится задачей целиком),
+     * «Спросить» -> intent не передаётся, фразу разбирает классификатор.
+     */
+    if (s_session == KOUKI_SESSION_TASK) {
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
+                 CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
+    } else {
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s",
+                 CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
+    }
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -311,6 +322,18 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
 
     ESP_LOGI(TAG, "запись до %d с, канал %d, сервер %s", CONFIG_KOUKI_MAX_RECORD_S,
              CONFIG_KOUKI_MIC_CHANNEL, CONFIG_KOUKI_SERVER_URL);
+    return ESP_OK;
+}
+
+esp_err_t kouki_voice_set_session(kouki_session_t session)
+{
+    if (s_state == KOUKI_VOICE_RECORDING || s_state == KOUKI_VOICE_SENDING) {
+        /* Сессию меняют до записи: иначе непонятно, что отправится. */
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_session = session;
+    ESP_LOGI(TAG, "сессия: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
     return ESP_OK;
 }
 

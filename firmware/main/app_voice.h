@@ -26,6 +26,12 @@ typedef enum {
     KOUKI_VOICE_ERROR,      /* сеть, токен или сервер ответили ошибкой */
 } kouki_voice_state_t;
 
+/* Сессия: что означает запись. Кнопка, а не догадка по словам. */
+typedef enum {
+    KOUKI_SESSION_TASK = 0, /* «Записать»: фраза становится задачей целиком */
+    KOUKI_SESSION_ASK,      /* «Спросить»: фразу разбирает классификатор */
+} kouki_session_t;
+
 /* Всё, что станция показывает человеку после одной фразы. */
 typedef struct {
     bool has_transcript;
@@ -46,6 +52,12 @@ typedef void (*kouki_voice_event_cb_t)(kouki_voice_state_t state,
 
 /* Готовит буфер под запись (в PSRAM) и поднимает задачу записи. */
 esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx);
+
+/*
+ * Выбирает сессию до начала записи: «Записать» (intent=add_task) или «Спросить»
+ * (intent не передаётся, фразу разбирает классификатор на сервере).
+ */
+esp_err_t kouki_voice_set_session(kouki_session_t session);
 
 /* Начать запись. Повторный вызов во время записи ничего не меняет. */
 esp_err_t kouki_voice_start_recording(void);
