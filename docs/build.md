@@ -68,6 +68,19 @@ uv pip install --python <env>\Scripts\python.exe `
 **`export.bat`.** На путях с пробелами и на `XTENSA_GNU_CONFIG` он не работает — в проекте вместо него
 `tools/env-idf.ps1`, который берёт переменные из `idf_tools.py export --format key-value`.
 
+## Что ломалось уже после сборки
+
+| симптом | причина | лечение |
+| --- | --- | --- |
+| `EXIO_Init: Add new I2C device failed`, «I2C bus is not initialized» | `EXIO_Init()` вызван раньше `esp_board_init()` | I2C-шину создаёт аудио-борда: сначала `esp_board_init(16000, 2, 16)`, потом `EXIO_Init()` |
+| `esp_codec_dev.h: No such file or directory` | managed-компонент не попал в `REQUIRES` | `espressif__esp_codec_dev` в `main/CMakeLists.txt` и `components/audio_board/CMakeLists.txt` |
+| самопроверка `KOUKI_SELFTEST` не срабатывает | `-DSDKCONFIG_DEFAULTS` игнорируется, если `firmware/sdkconfig` уже существует | удалить `sdkconfig` (или `idf.py fullclean`) |
+| на экране пустые прямоугольники вместо русских букв | в `lv_font_montserrat_*` нет кириллицы, LVGL молча пропускает глифы | `firmware/main/ui/font_ru_{14,16,20}.c` (команда перегенерации — `docs/decisions.md`) |
+| прошивка не шьётся из контейнера | Docker на Windows не отдаёт COM-порт | `tools/flash-windows.ps1 -Port COM3` из Windows |
+
+Скрипты `tools/*.ps1` лежат в UTF-8 **с BOM**: Windows PowerShell 5.1 иначе читает
+кириллицу как ANSI и падает `ParserError` ещё до первой строки логики.
+
 ## Секреты
 
 `firmware/sdkconfig.secret` (в `.gitignore`):
