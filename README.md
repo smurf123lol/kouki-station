@@ -74,3 +74,7 @@ Wake-word по умолчанию выключен: станция работа�
 - [docs/hardware.md](docs/hardware.md) — плата, пины, отличия ревизий.
 - [docs/protocol.md](docs/protocol.md) — что и как отправляется на сервер.
 - [docs/decisions.md](docs/decisions.md) — почему ESP-IDF, почему кнопка, почему WAV.
+
+## Безопасность
+
+Модель угроз, что осознанно не защищено и как обращаться с токеном — [docs/security.md](docs/security.md).

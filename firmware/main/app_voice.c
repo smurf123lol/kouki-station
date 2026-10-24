@@ -8,6 +8,7 @@
 #include "esp_board_init.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -322,6 +323,10 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
         .method = HTTP_METHOD_POST,
         .timeout_ms = 30000,
         .buffer_size = 4096,
+#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
+        /* https работает через встроенный набор корневых сертификатов: своего CA не нужно. */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -459,18 +464,24 @@ static void send_task(void *arg)
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
     const esp_err_t err = http_post_wav(s_buf, WAV_HEADER_SIZE + s_sample_bytes, response, sizeof(response),
                                        &result.http_status);
-    if (err != ESP_OK && response[0] == '\0') {
-        copy_str(result.error, sizeof(result.error),
-                 err == ESP_ERR_INVALID_RESPONSE ? "Сервер ответил ошибкой" : "Сервер недоступен");
+    if (err != ESP_OK) {
+        /*
+         * Статус и тело ответа важны по отдельности: «Сервер недоступен» — это не то же
+         * самое, что «сервер ответил 503», и лечится это по-разному. Тело печатаем
+         * в лог целиком (обрезанное), но на экран не выводим: там место под статус.
+         */
+        if (result.http_status > 0) {
+            snprintf(result.error, sizeof(result.error), "Сервер ответил HTTP %d", result.http_status);
+        } else {
+            copy_str(result.error, sizeof(result.error), "Сервер недоступен");
+        }
+        ESP_LOGW(TAG, "ответ сервера (HTTP %d): %.160s", result.http_status, response);
         publish(KOUKI_VOICE_ERROR, &result);
         vTaskDelete(NULL);
         return;
     }
 
     parse_response(response, &result);
-    if (result.error[0] == '\0' && err == ESP_ERR_INVALID_RESPONSE) {
-        copy_str(result.error, sizeof(result.error), "Сервер ответил ошибкой");
-    }
     if (result.error[0] != '\0') {
         publish(KOUKI_VOICE_ERROR, &result);
     } else {

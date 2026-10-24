@@ -34,6 +34,8 @@ idf_component_register(
         esp_netif
         nvs_flash
         json
+        # esp_crt_bundle.h живёт в mbedtls: нужен для https без своего CA.
+        mbedtls
         audio_board
         espressif__esp_codec_dev
         # Wake-word: esp-sr (модели — в разделе model, см. partitions.csv)

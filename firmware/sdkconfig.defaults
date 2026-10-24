@@ -38,3 +38,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 #   CONFIG_KOUKI_WAKE_ENABLED=y
 # и прошивать вместе с srmodels.bin (tools/flash-windows.ps1 умеет).
 CONFIG_MODEL_IN_FLASH=y
+
+# Корневые сертификаты для https: своего CA не заводим, берём встроенный набор.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
