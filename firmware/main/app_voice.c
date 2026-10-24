@@ -34,7 +34,17 @@ static void *s_cb_ctx;
 static uint8_t *s_buf;              /* WAV целиком: заголовок + сэмплы */
 static size_t s_capacity_bytes;     /* максимум сэмплов под CONFIG_KOUKI_MAX_RECORD_S */
 static size_t s_sample_bytes;       /* сколько уже записано (без заголовка) */
-static volatile bool s_recording;
+
+/*
+ * У буфера записи всегда ровно один владелец: пока идёт запись — задача записи,
+ * пока идёт отправка — задача отправки. Переход между владельцами делает
+ * record_task (см. finish_recording), поэтому send_task никогда не читает то,
+ * что кто-то ещё пишет.
+ *
+ * s_stop_requested — просьба из другого потока (кнопка, таймер кодового слова)
+ * закончить запись. Саму остановку выполняет владелец буфера, а не просящий.
+ */
+static volatile bool s_stop_requested;
 
 static inline void put_le16(uint8_t *p, uint16_t v)
 {
@@ -181,6 +191,24 @@ static esp_err_t record_chunk(void)
 /* Момент, когда закончится автозапись после кодового слова; 0 — обычная запись. */
 static TickType_t s_wake_stop_tick;
 
+static bool IsLoudEnough(void);
+static void finish_recording(void);
+static void copy_str(char *dst, size_t dst_len, const char *src);
+static void send_task(void *arg);
+
+/* Владелец буфера? Состояние читают и задачи, и UI-таймер, поэтому под мьютексом. */
+static bool IsRecording(void)
+{
+    bool recording = false;
+
+    if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+        recording = (s_state == KOUKI_VOICE_RECORDING);
+        xSemaphoreGive(s_lock);
+    }
+
+    return recording;
+}
+
 /*
  * Пока станция не пишет, микрофон принадлежит детектору кодового слова:
  * это единственный читатель I2S, поэтому кнопка и слово не спорят за поток.
@@ -198,8 +226,10 @@ static void idle_step(void)
     if (kouki_wake_feed(mono, RECORD_CHUNK)) {
         ESP_LOGI(TAG, "услышали кодовое слово (%s): записываю %d с",
                  kouki_wake_model(), CONFIG_KOUKI_WAKE_RECORD_S);
-        kouki_voice_start_recording();
-        s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_WAKE_RECORD_S * 1000);
+        /* Пока идёт отправка предыдущей фразы, буфер занят: слово просто пропустим. */
+        if (kouki_voice_start_recording() == ESP_OK) {
+            s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_WAKE_RECORD_S * 1000);
+        }
     }
 #else
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -210,25 +240,63 @@ static void record_task(void *arg)
 {
     (void)arg;
     while (true) {
-        if (!s_recording) {
+        if (!IsRecording()) {
             idle_step();
             continue;
         }
 
-        if (s_wake_stop_tick != 0 && xTaskGetTickCount() >= s_wake_stop_tick) {
-            /* Запись, начатая кодовым словом, не может длиться дольше заданного. */
-            s_wake_stop_tick = 0;
-            s_recording = false;
-            kouki_voice_stop_and_send();
+        /* Остановку просит кнопка или истёкший таймер кодового слова. */
+        if (s_stop_requested || (s_wake_stop_tick != 0 && xTaskGetTickCount() >= s_wake_stop_tick)) {
+            finish_recording();
             continue;
         }
 
         if (record_chunk() != ESP_OK) {
-            /* Кончилось место — закрываем запись так же, как по кнопке. */
-            s_recording = false;
-            s_wake_stop_tick = 0;
-            kouki_voice_stop_and_send();
+            /* Кончилось место в буфере — закрываем запись так же, как по кнопке. */
+            finish_recording();
         }
+    }
+}
+
+/*
+ * Единственное место, где запись заканчивается и буфер передаётся отправителю.
+ * Вызывается только из record_task, поэтому писателя в буфере уже нет.
+ */
+static void finish_recording(void)
+{
+    kouki_voice_result_t result = {0};
+
+    if (!s_lock || xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    const size_t bytes = s_sample_bytes;
+    s_stop_requested = false;
+    s_wake_stop_tick = 0;
+    xSemaphoreGive(s_lock);
+
+    result.duration_ms = (uint32_t)((uint64_t)(bytes / BYTES_PER_SAMPLE) * 1000 / SAMPLE_RATE);
+
+    if (bytes == 0) {
+        copy_str(result.error, sizeof(result.error), "Тишина: ничего не записалось");
+        publish(KOUKI_VOICE_ERROR, &result);
+        return;
+    }
+
+    wav_write_header(s_buf, (uint32_t)bytes);
+
+    if (!IsLoudEnough()) {
+        copy_str(result.error, sizeof(result.error), "Тишина: слишком тихо, повторите ближе к микрофону");
+        publish(KOUKI_VOICE_ERROR, &result);
+        return;
+    }
+
+    /* С этого момента буфер заморожен: его читает только send_task. */
+    publish(KOUKI_VOICE_SENDING, &result);
+
+    if (xTaskCreate(send_task, "kouki.send", 8192, NULL, 5, NULL) != pdPASS) {
+        copy_str(result.error, sizeof(result.error), "Не удалось запустить отправку");
+        publish(KOUKI_VOICE_ERROR, &result);
     }
 }
 
@@ -384,10 +452,9 @@ static void send_task(void *arg)
 
     const uint32_t frames = (uint32_t)(s_sample_bytes / BYTES_PER_SAMPLE);
     result.duration_ms = (uint32_t)((uint64_t)frames * 1000 / SAMPLE_RATE);
-    wav_write_header(s_buf, (uint32_t)s_sample_bytes);
 
     char response[4096] = {0};
-    publish(KOUKI_VOICE_SENDING, &result);
+    /* WAV-заголовок и состояние SENDING выставил finish_recording: буфер заморожен. */
 
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
     const esp_err_t err = http_post_wav(s_buf, WAV_HEADER_SIZE + s_sample_bytes, response, sizeof(response),
@@ -464,15 +531,41 @@ esp_err_t kouki_voice_set_session(kouki_session_t session)
 
 esp_err_t kouki_voice_start_recording(void)
 {
-    if (s_state == KOUKI_VOICE_RECORDING) {
-        return ESP_OK;
+    if (!s_lock) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    s_sample_bytes = 0;
-    s_recording = true;
-    s_wake_stop_tick = 0;
-    publish(KOUKI_VOICE_RECORDING, NULL);
-    return ESP_OK;
+    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t err = ESP_OK;
+
+    if (s_state == KOUKI_VOICE_RECORDING) {
+        /* Повторный клик во время записи не должен её обнулять. */
+        err = ESP_OK;
+    } else if (s_state == KOUKI_VOICE_SENDING) {
+        /*
+         * Буфер занят отправкой предыдущей фразы. Если начать писать сейчас,
+         * send_task прочитает полустёртую запись — поэтому отказываем.
+         */
+        err = ESP_ERR_INVALID_STATE;
+    } else {
+        s_sample_bytes = 0;
+        s_stop_requested = false;
+        s_wake_stop_tick = 0;
+        s_state = KOUKI_VOICE_RECORDING;    /* владелец буфера — record_task */
+    }
+
+    xSemaphoreGive(s_lock);
+
+    if (err == ESP_OK) {
+        publish(KOUKI_VOICE_RECORDING, NULL);
+    } else {
+        ESP_LOGW(TAG, "запись не начата: идёт отправка предыдущей фразы");
+    }
+
+    return err;
 }
 
 /// <summary>
@@ -504,25 +597,30 @@ static bool IsLoudEnough(void)
 
 esp_err_t kouki_voice_stop_and_send(void)
 {
-    if (s_state != KOUKI_VOICE_RECORDING) {
-        return ESP_OK;
+    if (!s_lock) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    s_recording = false;
-    s_wake_stop_tick = 0;
-    if (s_sample_bytes == 0 || !IsLoudEnough()) {
-        kouki_voice_result_t result = {0};
-        copy_str(result.error, sizeof(result.error),
-                  s_sample_bytes == 0
-                      ? "Тишина: ничего не записалось"
-                      : "Тишина: слишком тихо, повторите ближе к микрофону");
-        publish(KOUKI_VOICE_ERROR, &result);
-        return ESP_OK;
+    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
 
-    if (xTaskCreate(send_task, "kouki.send", 8192, NULL, 5, NULL) != pdPASS) {
-        return ESP_ERR_NO_MEM;
+    const bool recording = (s_state == KOUKI_VOICE_RECORDING);
+    if (recording) {
+        /*
+         * Только просьба: запись закроет её владелец — record_task, он же выставит
+         * заголовок и передаст буфер отправке. Иначе send_task прочитал бы буфер,
+         * в который прямо сейчас пишут.
+         */
+        s_stop_requested = true;
     }
+
+    xSemaphoreGive(s_lock);
+
+    if (!recording) {
+        return ESP_OK;      /* уже отправляем или ничего не пишем */
+    }
+
     return ESP_OK;
 }
 
