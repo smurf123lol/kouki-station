@@ -32,6 +32,11 @@ $env:TEMP = $tmp
 $env:TMP = $tmp
 $env:CCACHE_DIR = Join-Path $workspace '_scratch\ccache'
 New-Item -ItemType Directory -Path $env:CCACHE_DIR -Force | Out-Null
+
+# esp-sr упаковывает модели скриптом на Python, который печатает имена моделей
+# по-китайски: в консоли cp1251 это UnicodeEncodeError. Заставляем Python писать UTF-8.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 Push-Location $fw
 try {
     $common = @()

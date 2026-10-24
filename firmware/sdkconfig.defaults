@@ -24,6 +24,12 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 
-# Партиции: один большой app под 4 МБ + данные.
+# Партиции: один большой app под 4 МБ + данные + раздел моделей esp-sr.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Wake-word: пока берём готовое «Hi ESP» (wn10_hiesp, ~1 МБ) — она даёт
+# проверяемый тракт «услышали слово → записали → отправили».
+# Своё русское слово требует обучения в Espressif и появится отдельной задачей.
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_SR_WN_WN10_HIESP=y

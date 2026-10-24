@@ -60,8 +60,16 @@ menu "Kouki Station"
             string "Имя модели (пусто — первая найденная)"
             default ""
             help
-                Например wn9_hiesp или wn9_hilexin. Пустая строка — берём
+                Например wn10_hiesp или wn9_hilexin. Пустая строка — берём
                 первую wake-word модель из esp-sr.
+
+        config KOUKI_WAKE_PARTITION
+            string "Партиция с моделями esp-sr"
+            default "model"
+            help
+                esp-sr читает модели из flash-раздела, а не из образа приложения.
+                Метка должна совпадать с partitions.csv, иначе детектор не поднимется
+                и станция останется работать только по кнопке.
 
         config KOUKI_WAKE_THRESHOLD
             int "Порог срабатывания, проценты"

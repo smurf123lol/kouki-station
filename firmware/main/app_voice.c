@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "app_wake.h"
 #include "cJSON.h"
 #include "esp_board_init.h"
 #include "esp_check.h"
@@ -86,30 +87,69 @@ static void publish(kouki_voice_state_t state, const kouki_voice_result_t *resul
     }
 }
 
-/* Читает один кусок с микрофона и складывает выбранный канал в s_buf. */
-static esp_err_t record_chunk(void)
+/* Читает один кусок с микрофона и отдаёт выбранный канал в dst (frames сэмплов). */
+static esp_err_t read_mic(int16_t *dst, int frames)
 {
     const int channels = esp_get_feed_channel() > 0 ? esp_get_feed_channel() : 4;
     const int mic = CONFIG_KOUKI_MIC_CHANNEL < channels ? CONFIG_KOUKI_MIC_CHANNEL : 0;
     static int16_t raw[RECORD_CHUNK * 4];
 
-    if (mic >= 4) {
+    if (mic >= 4 || frames > RECORD_CHUNK) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    const int bytes = RECORD_CHUNK * channels * BYTES_PER_SAMPLE;
+    const int bytes = frames * channels * BYTES_PER_SAMPLE;
     ESP_RETURN_ON_ERROR(esp_get_feed_data(true, raw, bytes), TAG, "чтение микрофона не удалось");
 
-    for (int i = 0; i < RECORD_CHUNK; i++) {
-        if (s_sample_bytes + BYTES_PER_SAMPLE > s_capacity_bytes) {
-            return ESP_ERR_NO_MEM;
-        }
-        const int16_t sample = raw[i * channels + mic];
-        memcpy(s_buf + WAV_HEADER_SIZE + s_sample_bytes, &sample, BYTES_PER_SAMPLE);
-        s_sample_bytes += BYTES_PER_SAMPLE;
+    for (int i = 0; i < frames; i++) {
+        dst[i] = raw[i * channels + mic];
     }
 
     return ESP_OK;
+}
+
+/* Читает один кусок с микрофона и складывает выбранный канал в s_buf. */
+static esp_err_t record_chunk(void)
+{
+    static int16_t mono[RECORD_CHUNK];
+    const size_t bytes = RECORD_CHUNK * BYTES_PER_SAMPLE;
+
+    if (s_sample_bytes + bytes > s_capacity_bytes) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_RETURN_ON_ERROR(read_mic(mono, RECORD_CHUNK), TAG, "запись куска");
+    memcpy(s_buf + WAV_HEADER_SIZE + s_sample_bytes, mono, bytes);
+    s_sample_bytes += bytes;
+
+    return ESP_OK;
+}
+
+/* Момент, когда закончится автозапись после кодового слова; 0 — обычная запись. */
+static TickType_t s_wake_stop_tick;
+
+/*
+ * Пока станция не пишет, микрофон принадлежит детектору кодового слова:
+ * это единственный читатель I2S, поэтому кнопка и слово не спорят за поток.
+ */
+static void idle_step(void)
+{
+#if CONFIG_KOUKI_WAKE_ENABLED
+    static int16_t mono[RECORD_CHUNK];
+
+    if (!kouki_wake_is_ready() || read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+
+    if (kouki_wake_feed(mono, RECORD_CHUNK)) {
+        ESP_LOGI(TAG, "услышали кодовое слово (%s): записываю %d с",
+                 kouki_wake_model(), CONFIG_KOUKI_WAKE_RECORD_S);
+        kouki_voice_start_recording();
+        s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_WAKE_RECORD_S * 1000);
+    }
+#else
+    vTaskDelay(pdMS_TO_TICKS(20));
+#endif
 }
 
 static void record_task(void *arg)
@@ -117,13 +157,22 @@ static void record_task(void *arg)
     (void)arg;
     while (true) {
         if (!s_recording) {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            idle_step();
+            continue;
+        }
+
+        if (s_wake_stop_tick != 0 && xTaskGetTickCount() >= s_wake_stop_tick) {
+            /* Запись, начатая кодовым словом, не может длиться дольше заданного. */
+            s_wake_stop_tick = 0;
+            s_recording = false;
+            kouki_voice_stop_and_send();
             continue;
         }
 
         if (record_chunk() != ESP_OK) {
             /* Кончилось место — закрываем запись так же, как по кнопке. */
             s_recording = false;
+            s_wake_stop_tick = 0;
             kouki_voice_stop_and_send();
         }
     }
@@ -330,6 +379,13 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
 
+#if CONFIG_KOUKI_WAKE_ENABLED
+    /* Детектор не критичен: если модели нет, станция продолжает работать по кнопке. */
+    if (kouki_wake_init() != ESP_OK) {
+        ESP_LOGW(TAG, "кодовое слово недоступно, работаем по кнопке");
+    }
+#endif
+
     ESP_LOGI(TAG, "запись до %d с, канал %d, сервер %s", CONFIG_KOUKI_MAX_RECORD_S,
              CONFIG_KOUKI_MIC_CHANNEL, CONFIG_KOUKI_SERVER_URL);
     return ESP_OK;
@@ -355,6 +411,7 @@ esp_err_t kouki_voice_start_recording(void)
 
     s_sample_bytes = 0;
     s_recording = true;
+    s_wake_stop_tick = 0;
     publish(KOUKI_VOICE_RECORDING, NULL);
     return ESP_OK;
 }
@@ -393,6 +450,7 @@ esp_err_t kouki_voice_stop_and_send(void)
     }
 
     s_recording = false;
+    s_wake_stop_tick = 0;
     if (s_sample_bytes == 0 || !IsLoudEnough()) {
         kouki_voice_result_t result = {0};
         copy_str(result.error, sizeof(result.error),

@@ -1,0 +1,50 @@
+# Дополнение к esp-sr: ядра esp-dl собираются по объединению всех compile_req файлов.
+#
+# esp-sr 2.6 в своём tool/esp-sr-req.yml перечисляет только *_conv2d_11cn_bias и
+# считает, что модели WakeNet обходятся им. У wn10 (int8, w8a16) первый свёрточный
+# слой идёт без bias, и в рантайме esp-dl отказывается его выполнять:
+#   E Conv: no Conv kernel for packed key 0x0202
+#   -> детектор «слушает» и никогда не срабатывает.
+#
+# Поэтому добавляем недостающие ядра w8a16 для esp32s3 (tie728). Список — подмножество
+# esp-dl/spec/kernels.yml; лишние ядра просто добавят несколько килобайт кода.
+kernel_abi: 1
+
+ops:
+  - Add
+  - AveragePool
+  - Conv
+  - GRU
+  - LUT
+  - LpNormalization
+  - Mul
+  - RMSNormalization
+  - RequantizeLinear
+  - Split
+  - StreamingCache
+
+kernels:
+  - dl_tie728_w8a16_conv2d_11cn
+  - dl_tie728_w8a16_conv2d_11cn_relu
+  - dl_tie728_w8a16_conv2d_11cn_bias
+  - dl_tie728_w8a16_conv2d_11cn_bias_relu
+  - dl_tie728_w8a16_conv2d_33cn
+  - dl_tie728_w8a16_conv2d_33cn_relu
+  - dl_tie728_w8a16_conv2d_33cn_bias
+  - dl_tie728_w8a16_conv2d_33cn_bias_relu
+  - dl_tie728_w8a16_conv2d_hwcn
+  - dl_tie728_w8a16_conv2d_hwcn_relu
+  - dl_tie728_w8a16_conv2d_hwcn_bias
+  - dl_tie728_w8a16_conv2d_hwcn_bias_relu
+  - dl_tie728_w8a16_unaligned_conv2d_11cn
+  - dl_tie728_w8a16_unaligned_conv2d_11cn_relu
+  - dl_tie728_w8a16_unaligned_conv2d_11cn_bias
+  - dl_tie728_w8a16_unaligned_conv2d_11cn_bias_relu
+  - dl_tie728_w8a16_unaligned_conv2d_33cn
+  - dl_tie728_w8a16_unaligned_conv2d_33cn_relu
+  - dl_tie728_w8a16_unaligned_conv2d_33cn_bias
+  - dl_tie728_w8a16_unaligned_conv2d_33cn_bias_relu
+  - dl_tie728_w8a16_unaligned_conv2d_hwcn
+  - dl_tie728_w8a16_unaligned_conv2d_hwcn_relu
+  - dl_tie728_w8a16_unaligned_conv2d_hwcn_bias
+  - dl_tie728_w8a16_unaligned_conv2d_hwcn_bias_relu
