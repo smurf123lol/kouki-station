@@ -1,8 +1,9 @@
-#include "app_voice.h"
+﻿#include "app_voice.h"
 
 #include <string.h>
 #include <inttypes.h>
 
+#include "app_speech.h"
 #include "app_wake.h"
 #include "cJSON.h"
 #include "esp_board_init.h"
@@ -486,6 +487,15 @@ static void send_task(void *arg)
         publish(KOUKI_VOICE_ERROR, &result);
     } else {
         publish(KOUKI_VOICE_DONE, &result);
+    }
+
+    /*
+     * Ответ озвучиваем после публикации: экран уже показывает текст, а колонка
+     * договаривает. Синхронно — очередь команд у станции одна, параллельная
+     * запись в тот же кодек мешала бы следующей записи с микрофона.
+     */
+    if (result.error[0] == '\0' && result.answer[0] != '\0') {
+        (void)kouki_speech_play(result.answer);
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */

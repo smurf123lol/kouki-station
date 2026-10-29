@@ -1,10 +1,11 @@
-idf_component_register(
+﻿idf_component_register(
     SRCS
         "./main.c"
         "./app_wifi.c"
         "./app_voice.c"
         "./app_ui.c"
-        "./app_wake.c"
+        "./app_speech.c"
+    "./app_wake.c"
         # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md
         "./drivers/exio/TCA9554PWR.c"
         "./drivers/lcd/esp_lcd_st77916/esp_lcd_st77916.c"
