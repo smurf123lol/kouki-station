@@ -1,4 +1,4 @@
-﻿#include "app_voice.h"
+#include "app_voice.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -29,6 +29,12 @@ static SemaphoreHandle_t s_lock;
 static kouki_voice_state_t s_state = KOUKI_VOICE_IDLE;
 static kouki_voice_result_t s_result;
 static kouki_session_t s_session = KOUKI_SESSION_TASK;
+
+/*
+ * Сессия, с которой ушла текущая запись: фиксируется в момент остановки записи,
+ * чтобы нажатие другой кнопки во время отправки не меняло смысл уже сказанного.
+ */
+static kouki_session_t s_send_session = KOUKI_SESSION_TASK;
 
 static kouki_voice_event_cb_t s_cb;
 static void *s_cb_ctx;
@@ -310,14 +316,19 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
      * Сессия задаёт смысл записи, а не сервер угадывает его по словам:
      * «Записать» -> intent=add_task (фраза становится задачей целиком),
      * «Спросить» -> intent=ask (фраза становится вопросом, ответ ляжет в задачу).
+     *
+     * Берём s_send_session — снимок на момент остановки записи: кнопка, нажатая
+     * во время отправки, относится к следующей фразе и смысл этой не меняет.
      */
-    if (s_session == KOUKI_SESSION_TASK) {
+    if (s_send_session == KOUKI_SESSION_TASK) {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
                  CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
     } else {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask",
                  CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
     }
+
+    ESP_LOGI(TAG, "отправляю: сессия %s", s_send_session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -540,11 +551,16 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
 
 esp_err_t kouki_voice_set_session(kouki_session_t session)
 {
-    if (s_state == KOUKI_VOICE_RECORDING || s_state == KOUKI_VOICE_SENDING) {
-        /* Сессию меняют до записи: иначе непонятно, что отправится. */
+    if (s_state == KOUKI_VOICE_RECORDING) {
+        /* Пока пишем, кнопки блокируются: смысл записи уже определён. */
         return ESP_ERR_INVALID_STATE;
     }
 
+    /*
+     * Во время отправки менять можно: сессия относится к следующей фразе, а текущая
+     * уходит со снимком s_send_session. Иначе нажатие «Спросить» сразу после
+     * «Записать» молча терялось и следующая фраза снова шла задачей.
+     */
     s_session = session;
     ESP_LOGI(TAG, "сессия: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
     return ESP_OK;
@@ -632,8 +648,12 @@ esp_err_t kouki_voice_stop_and_send(void)
          * Только просьба: запись закроет её владелец — record_task, он же выставит
          * заголовок и передаст буфер отправке. Иначе send_task прочитал бы буфер,
          * в который прямо сейчас пишут.
+         *
+         * Сессию фиксируем здесь же: пока запись закрывается и уходит, кнопку
+         * можно нажать ещё раз, и менять смысл уже сказанного нельзя.
          */
         s_stop_requested = true;
+        s_send_session = s_session;
     }
 
     xSemaphoreGive(s_lock);
