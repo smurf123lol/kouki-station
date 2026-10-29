@@ -9,6 +9,7 @@
 #include "app_ui.h"
 #include "app_voice.h"
 #include "app_wifi.h"
+#include "driver/gpio.h"
 #include "esp_board_init.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -21,6 +22,30 @@
 #include "TCA9554PWR.h"
 
 static const char *TAG = "kouki";
+
+/*
+ * Усилитель NS4150B включается высоким уровнем на GPIO 15 — это видно по
+ * заводскому Arduino-примеру (pinMode(15, OUTPUT); digitalWrite(15, HIGH)).
+ * В нашем ESP-IDF-компоненте audio_board эта нога отключена (-1), поэтому
+ * кодек открывается и принимает данные, а динамик молчит.
+ */
+static void speaker_amp_enable(void)
+{
+#if CONFIG_KOUKI_PLAYER_PA_GPIO >= 0
+    const gpio_num_t pin = (gpio_num_t)CONFIG_KOUKI_PLAYER_PA_GPIO;
+    const gpio_config_t config = {
+        .pin_bit_mask = 1ULL << pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    const esp_err_t err = gpio_config(&config);
+    gpio_set_level(pin, 1);
+    ESP_LOGI(TAG, "усилитель динамика (пин %d): %s", pin, esp_err_to_name(err));
+#endif
+}
+
 
 /* Сеть поднимается отдельно: экран должен ожить даже без Wi-Fi. */
 static void wifi_task(void *arg)
@@ -83,6 +108,15 @@ void app_main(void)
      * затем LCD и LVGL.
      */
     ESP_ERROR_CHECK(esp_board_init(16000, 2, 16));
+    speaker_amp_enable();
+
+    /*
+     * Заводской bsp выставляет громкость ДО открытия кодека, а ES8311 такой
+     * регистр игнорирует — динамик остаётся немым. Повторяем после открытия.
+     */
+    esp_err_t volume = esp_audio_set_play_vol(CONFIG_KOUKI_PLAYER_VOLUME);
+    ESP_LOGI(TAG, "громкость динамика %d: %s", CONFIG_KOUKI_PLAYER_VOLUME, esp_err_to_name(volume));
+
     EXIO_Init();
     LCD_Init();
     LVGL_Init();

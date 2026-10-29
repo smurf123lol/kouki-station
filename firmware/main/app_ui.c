@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_voice.h"
+#include "app_speech.h"
 #include "app_wifi.h"
 #include "esp_log.h"
 #include "lvgl.h"

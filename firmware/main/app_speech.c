@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "esp_board_init.h"
+#include "esp_codec_dev.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -233,10 +234,38 @@ esp_err_t kouki_speech_play(const char *text)
 
     ESP_LOGI(TAG, "озвучиваю ответ: %.60s… (%u кадров, было %lu Гц / %u кан.)", text, (unsigned)resampled,
              (unsigned long)info.rate, (unsigned)info.channels);
-    const esp_err_t played = esp_audio_play(stereo, (int)(resampled * 4), portMAX_DELAY);
+
+    /*
+     * Отдаём через bsp_audio_play: у этой платы I2S открыт 32-битными слотами,
+     * и bsp сам разворачивает 16-битные сэмплы (data[i] << 16). Прямая запись
+     * 16-битных данных в такой канал ускоряет воспроизведение вдвое.
+     */
+    const size_t tail = 4800;   /* 0,3 с тишины: DMA не «жуёт» последний буфер */
+    const size_t total = resampled + tail;
+    int16_t *padded = heap_caps_malloc(total * 4, MALLOC_CAP_SPIRAM);
+    if (padded == NULL) {
+        heap_caps_free(mono);
+        heap_caps_free(sink.data);
+        return ESP_ERR_NO_MEM;
+    }
+
+    memset(padded, 0, total * 4);
+    memcpy(padded, stereo, resampled * 4);
+    heap_caps_free(stereo);
+
+    esp_codec_dev_handle_t device = esp_ret_play_dev();
+    if (device != NULL) {
+        esp_codec_dev_set_out_mute(device, false);
+    }
+
+    const esp_err_t played = esp_audio_play(padded, (int)(total * 4), portMAX_DELAY);
+    heap_caps_free(padded);
+
+    if (device != NULL) {
+        esp_codec_dev_set_out_mute(device, true);
+    }
     ESP_LOGI(TAG, "воспроизведение: %s", esp_err_to_name(played));
 
-    heap_caps_free(stereo);
     heap_caps_free(mono);
     heap_caps_free(sink.data);
     return played;
