@@ -12,12 +12,15 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "kouki.speech";
 
 #define SPEECH_TIMEOUT_MS 30000
-#define SPEECH_MAX_BYTES  (1024 * 1024)   /* минута речи — с запасом */
+#define SPEECH_MAX_BYTES  (512 * 1024)    /* одна фраза: ~16 с речи с запасом */
 #define SPEECH_HEADER      44
 
 /* Приём тела ответа: растём в PSRAM, пока не кончится предел или память. */
@@ -133,7 +136,7 @@ static size_t resample_to_16k(const int16_t *src, size_t frames, uint32_t rate, 
     return out;
 }
 
-esp_err_t kouki_speech_play(const char *text)
+static esp_err_t speech_play_piece(const char *text)
 {
     if (text == NULL || text[0] == '\0') {
         return ESP_OK;
@@ -269,4 +272,87 @@ esp_err_t kouki_speech_play(const char *text)
     heap_caps_free(mono);
     heap_caps_free(sink.data);
     return played;
+}
+
+/*
+ * Озвучивание ответа целиком.
+ *
+ * Сервер синтезирует весь текст сразу, и длинный ответ не влезает в буфер
+ * приёма: на 16 кГц моно 16 бит это 32 КБ/с, то есть мегабайт — всего
+ * полминуты. Поэтому режем ответ на фразы по знакам конца предложения и
+ * играем по одной: буфер маленький, а речь начинается раньше, чем сервер
+ * досинтезирует остаток.
+ */
+esp_err_t kouki_speech_play(const char *text)
+{
+    if (text == NULL || text[0] == '\0') {
+        return ESP_OK;
+    }
+
+    const size_t limit = 160;   /* ~80 русских букв: одна-две короткие фразы */
+    size_t length = strlen(text);
+    char *piece = heap_caps_malloc(limit + 1, MALLOC_CAP_SPIRAM);
+    if (piece == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t result = ESP_OK;
+    size_t start = 0;
+    while (start < length) {
+        while (start < length && (text[start] == ' ' || text[start] == '\n' || text[start] == '\r')) {
+            start++;
+        }
+        if (start >= length) {
+            break;
+        }
+
+        /* Ищем конец фразы: ближайший разделитель, но не дальше лимита. */
+        size_t end = start;
+        size_t cut = 0;
+        while (end < length && end - start < limit) {
+            const char symbol = text[end];
+            end++;
+            if (symbol == '.' || symbol == '!' || symbol == '?' || symbol == ';' || symbol == '\n') {
+                cut = end;
+                break;
+            }
+        }
+
+        if (cut == 0) {
+            if (end >= length) {
+                cut = length;            /* хвост без точки */
+            } else {
+                /* Длинная фраза без знаков — режем по последнему пробелу. */
+                cut = end;
+                while (cut > start && text[cut - 1] != ' ') {
+                    cut--;
+                }
+                if (cut == start) {
+                    cut = end;               /* пробелов нет — режем как есть */
+                }
+            }
+        }
+
+        size_t piece_length = cut - start;
+        while (piece_length > 0 && (text[start + piece_length - 1] == ' ' || text[start + piece_length - 1] == '\n')) {
+            piece_length--;
+        }
+
+        if (piece_length > 0 && piece_length <= limit) {
+            memcpy(piece, text + start, piece_length);
+            piece[piece_length] = '\0';
+            const esp_err_t played = speech_play_piece(piece);
+            if (played != ESP_OK && result == ESP_OK) {
+                result = played;
+            }
+        }
+
+        start = cut;
+        if (start < length) {
+            vTaskDelay(pdMS_TO_TICKS(60));   /* пауза между фразами */
+        }
+    }
+
+    heap_caps_free(piece);
+    return result;
 }
