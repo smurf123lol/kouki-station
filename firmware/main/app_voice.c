@@ -36,6 +36,14 @@ static kouki_session_t s_session = KOUKI_SESSION_TASK;
  */
 static kouki_session_t s_send_session = KOUKI_SESSION_TASK;
 
+/*
+ * Окно продолжения: после ответа ассистента станция ещё слушает несколько секунд,
+ * чтобы человек мог ответить без повторного кодового слова. Один шаг на ответ —
+ * s_followup_round не даёт диалогу идти бесконечно.
+ */
+static bool s_followup_pending;
+static bool s_followup_round;
+
 static kouki_voice_event_cb_t s_cb;
 static void *s_cb_ctx;
 
@@ -507,6 +515,26 @@ static void send_task(void *arg)
      */
     if (result.error[0] == '\0' && result.answer[0] != '\0') {
         (void)kouki_speech_play(result.answer);
+
+#if CONFIG_KOUKI_FOLLOWUP_SECONDS > 0
+        /*
+         * Окно продолжения: после ответа на вопрос слушаем ещё несколько секунд.
+         * Второго окна подряд нет — иначе станция зациклится на своих же ответах.
+         */
+        if (s_send_session == KOUKI_SESSION_ASK && !s_followup_round) {
+            s_followup_round = true;
+            s_followup_pending = true;
+            ESP_LOGI(TAG, "продолжение: слушаю %d с", CONFIG_KOUKI_FOLLOWUP_SECONDS);
+
+            if (kouki_voice_start_recording() == ESP_OK) {
+                s_wake_stop_tick = xTaskGetTickCount() +
+                                   pdMS_TO_TICKS(CONFIG_KOUKI_FOLLOWUP_SECONDS * 1000);
+            } else {
+                s_followup_pending = false;
+                s_followup_round = false;
+            }
+        }
+#endif
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
@@ -592,6 +620,13 @@ esp_err_t kouki_voice_start_recording(void)
         s_stop_requested = false;
         s_wake_stop_tick = 0;
         s_state = KOUKI_VOICE_RECORDING;    /* владелец буфера — record_task */
+
+        /* Обычная запись (кнопка, кодовое слово) закрывает прошлый круг продолжения. */
+        if (!s_followup_pending) {
+            s_followup_round = false;
+        }
+
+        s_followup_pending = false;
     }
 
     xSemaphoreGive(s_lock);
