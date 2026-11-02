@@ -418,6 +418,42 @@ static const char *json_string(const cJSON *root, const char *name)
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : NULL;
 }
 
+/* Срезает недописанный UTF-8-символ в конце строки (strncpy режет по байтам). */
+static void utf8_trim_tail(char *s)
+{
+    const size_t len = strlen(s);
+    size_t start = len;
+    size_t back = 0;
+
+    while (start > 0 && back < 3 && ((unsigned char)s[start - 1] & 0xC0) == 0x80) {
+        start--;
+        back++;
+    }
+    if (start == 0) {
+        return;
+    }
+
+    const unsigned char lead = (unsigned char)s[start - 1];
+    size_t need = 0;
+    if ((lead & 0x80) == 0) {
+        need = 1;
+    } else if ((lead & 0xE0) == 0xC0) {
+        need = 2;
+    } else if ((lead & 0xF0) == 0xE0) {
+        need = 3;
+    } else if ((lead & 0xF8) == 0xF0) {
+        need = 4;
+    } else {
+        s[len - 1] = '\0';   /* одиночный продолженный байт — мусор */
+        return;
+    }
+
+    if (len - (start - 1) >= need) {
+        return;               /* символ полный */
+    }
+    s[start - 1] = '\0';     /* последовательность оборвана — срезаем её */
+}
+
 static void copy_str(char *dst, size_t dst_len, const char *src)
 {
     if (!dst_len) {
@@ -429,6 +465,7 @@ static void copy_str(char *dst, size_t dst_len, const char *src)
     }
     strncpy(dst, src, dst_len - 1);
     dst[dst_len - 1] = '\0';
+    utf8_trim_tail(dst);
 }
 
 /* Разбирает ответ /api/voice — только те поля, которые показывает экран. */

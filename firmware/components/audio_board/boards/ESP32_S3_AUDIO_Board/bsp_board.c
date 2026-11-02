@@ -373,6 +373,10 @@ esp_err_t bsp_audio_play(const int16_t* data, int length, TickType_t ticks_to_wa
     if (s_bits_per_chan != 32) {
         out_length = length * 2;
         data_out = malloc(out_length);
+        if (data_out == NULL) {   // kouki: на большом буфере malloc может не дать память
+            ESP_LOGE(TAG, "нет памяти под выходной буфер (%d байт)", (int)out_length);
+            return ESP_ERR_NO_MEM;
+        }
         for (int i = 0; i < length / sizeof(int16_t); i++) {
             int ret = data[i];
             data_out[i] = ret << 16;
@@ -383,6 +387,11 @@ esp_err_t bsp_audio_play(const int16_t* data, int length, TickType_t ticks_to_wa
     if (s_play_channel_format != 2 || s_play_sample_rate != 16000) {
         out_length *= audio_time;
         data_out_1 = malloc(out_length);
+        if (data_out_1 == NULL) {   // kouki: не пишем по NULL, если память кончилась
+            ESP_LOGE(TAG, "нет памяти под буфер пересэмплинга (%d байт)", (int)out_length);
+            free(data_out);
+            return ESP_ERR_NO_MEM;
+        }
         int *tmp_data = NULL;
         if (data_out != NULL) {
             tmp_data = data_out;

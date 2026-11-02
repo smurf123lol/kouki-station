@@ -117,13 +117,20 @@ esp_err_t kouki_speech_wav_parse(const uint8_t *wav, size_t len, kouki_speech_wa
             }
 
             const size_t avail = len - body;
+            if ((size_t)size > avail) {
+                return ESP_ERR_INVALID_RESPONSE;   /* size больше файла: не прыгаем вперёд */
+            }
             out->data_offset = body;
             out->data_bytes = (size_t)size < avail ? (size_t)size : avail;
             return out->data_bytes == 0 ? ESP_ERR_INVALID_RESPONSE : ESP_OK;
         }
 
-        /* Чанки выровнены по чётной границе. */
-        pos = body + size + (size & 1u);
+        /* Чанки выровнены по чётной границе; size может быть любым 32-битным. */
+        const size_t step = (size_t)size + (size & 1u);
+        if (step >= len - body) {
+            return ESP_ERR_INVALID_RESPONSE;       /* чанк съел весь файл — дальше некуда */
+        }
+        pos = body + step;
     }
 
     return ESP_ERR_INVALID_RESPONSE;
@@ -149,6 +156,44 @@ esp_err_t kouki_speech_stereo_expand(int16_t *samples, size_t frames)
 }
 
 /* Тело запроса: только текст, без лишних полей — серверу больше ничего не нужно. */
+/* Сколько символов UTF-8 в строке (байты продолжения не считаем). */
+static size_t utf8_chars(const char *s)
+{
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if ((*p & 0xC0) != 0x80) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Копия не длиннее max_chars символов UTF-8: символ не разрезаем. */
+static char *utf8_prefix_copy(const char *s, size_t max_chars)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    const unsigned char *cut = p;
+    size_t chars = 0;
+
+    while (*p != '\0' && chars < max_chars) {
+        p++;
+        while ((*p & 0xC0) == 0x80) {
+            p++;                       /* байты продолжения текущего символа */
+        }
+        chars++;
+        cut = p;
+    }
+
+    const size_t len = (size_t)(cut - (const unsigned char *)s);
+    char *out = malloc(len + 1);
+    if (out == NULL) {
+        return NULL;
+    }
+    memcpy(out, s, len);
+    out[len] = '\0';
+    return out;
+}
+
 static char *build_body(const char *text)
 {
     cJSON *root = cJSON_CreateObject();
@@ -279,15 +324,20 @@ esp_err_t kouki_speech_play(const char *text)
     s_busy = true;
     ESP_LOGI(TAG, "озвучиваю ответ: %.40s%s", text, strlen(text) > 40 ? "…" : "");
 
-    /* Длинный ответ сервер всё равно обрежет; здесь режем, чтобы не гнать лишнее. */
-    const size_t text_len = strnlen(text, KOUKI_SPEECH_MAX_CHARS);
-    char *trimmed = malloc(text_len + 1);
+    /*
+     * Лимит — в символах (как MaxAnswerChars на сервере), а не байтах: иначе
+     * кириллица обрезается вдвое раньше, а порез посреди символа даёт 400.
+     */
+    const size_t chars = utf8_chars(text);
+    char *trimmed = utf8_prefix_copy(text, KOUKI_SPEECH_MAX_CHARS);
     if (trimmed == NULL) {
         s_busy = false;
         return ESP_ERR_NO_MEM;
     }
-    memcpy(trimmed, text, text_len);
-    trimmed[text_len] = '\0';
+    if (chars > KOUKI_SPEECH_MAX_CHARS) {
+        ESP_LOGW(TAG, "ответ длиннее %u символов — озвучу начало",
+                 (unsigned)KOUKI_SPEECH_MAX_CHARS);
+    }
 
     char *body = build_body(trimmed);
     free(trimmed);
