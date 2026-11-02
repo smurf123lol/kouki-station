@@ -56,6 +56,10 @@
 .\tools\flash-windows.ps1 -Port COM3
 ```
 
+На Linux-сервере те же шаги делают `tools/build-linux.sh --secret` и `tools/flash-linux.sh`
+(плата видна как `/dev/ttyACM0`, группа `dialout` поднимается скриптом; `sdkconfig` живёт
+в каталоге сборки — см. `docs/build.md`, «Вариант 3»).
+
 - `TEMP`/`TMP`/`CCACHE_DIR`/`IDF_COMPONENT_CACHE_PATH` должны указывать в каталог внутри
   рабочей папки: в чужих каталогах сборка падает на правах (подробности — `docs/build.md`).
 - Путь с пробелом ломает Xtensa (`XTENSA_GNU_CONFIG` + `-dynconfig`) — поэтому в окружении
