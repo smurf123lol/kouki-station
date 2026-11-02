@@ -20,7 +20,15 @@ ORIGINAL_ARGS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WORKSPACE="$(cd "$REPO_ROOT/.." && pwd)"
+# Дерево задачи (git worktree) лежит в _scratch/wt/<имя>, поэтому воркспейс
+# считаем от общего каталога git: иначе _scratch, ESP-IDF и тулчейн искались бы
+# внутри wt/ и сборка падала на «нет ESP-IDF».
+COMMON_GIT="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$COMMON_GIT" ]; then
+    WORKSPACE="$(cd "$(dirname "$(dirname "$COMMON_GIT")")" && pwd)"
+else
+    WORKSPACE="$(cd "$REPO_ROOT/.." && pwd)"
+fi
 FIRMWARE="$REPO_ROOT/firmware"
 
 IDF_PATH="${IDF_PATH:-$WORKSPACE/_scratch/esp-idf}"

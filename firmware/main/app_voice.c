@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+#include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
 #include "cJSON.h"
@@ -519,6 +520,16 @@ static void send_task(void *arg)
         publish(KOUKI_VOICE_DONE, &result);
     }
 
+    /*
+     * Голос — после экрана: ответ человек видит сразу, а речь идёт следом.
+     * Задача отправки уже ничего не держит, кроме себя, поэтому блокирующее
+     * воспроизведение живёт здесь и не мешает UI. Запись на это время
+     * откладывается (см. start_recording_internal).
+     */
+    if (result.error[0] == '\0' && result.answer[0] != '\0') {
+        kouki_speech_play(result.answer);
+    }
+
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
     ESP_LOGI(TAG, "отправка: err=%s, HTTP %d, %s, услышали: %.120s",
              esp_err_to_name(err), result.http_status,
@@ -602,6 +613,12 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
         err = ESP_ERR_INVALID_STATE;
     } else if (s_starting) {
         /* Старт уже в работе (звучит сигнал): второй тон не играем. */
+        err = ESP_ERR_INVALID_STATE;
+    } else if (kouki_speech_busy()) {
+        /*
+         * Станция ещё говорит. Начать запись сейчас — значит записать
+         * собственную речь вместо человека, поэтому отказываем.
+         */
         err = ESP_ERR_INVALID_STATE;
     } else {
         s_starting = true;
