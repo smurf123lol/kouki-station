@@ -44,8 +44,6 @@ static const char *TAG = "kouki.tone";
 /* Хвост тишины после сигнала: 0,25 с стереопары при 16 кГц. */
 #define TONE_TAIL_FRAMES 4000u
 static int16_t s_tone_tail[TONE_TAIL_FRAMES * 2u];
-/* Расстройка правого канала: 0,4 % по высоте дают «шершавость» на слух. */
-#define TONE_DETUNE        0.004f
 #define TONE_FADE_MS       5
 #define TONE_FADE_SAMPLES  (TONE_SAMPLE_RATE * TONE_FADE_MS / 1000)
 #define TONE_PI            3.14159265358979323846f
@@ -55,29 +53,33 @@ typedef struct {
     uint16_t freq_hz;       /* с какой частоты начинается шаг */
     uint16_t end_hz;        /* куда приходит; 0 — держим freq_hz */
     uint16_t duration_ms;
-    bool decay;              /* true — «капля»: короткий спад после удара */
+    uint16_t decay_x10;      /* как быстро гаснет капля: 45 = expf(-4.5·t) */
+    uint16_t detune_x1000;   /* расстройка правого канала: 4 = 0,4 % */
 } tone_step_t;
 
 /*
- * Звучание: «капля» — короткий подъём высоты с быстрым спадом громкости,
- * как капля изо рта. Частоты разные, чтобы сигналы различались на слух:
- * старт записи — выше, отправка — ниже, ошибка — совсем низкая,
- * кодовое слово — самый широкий размах и самая звонкая.
+ * Звучание: «капля» — короткий перепад высоты с быстрым спадом громкости.
+ * Спад (decay_x10) и расстройка каналов (detune_x1000) свои у каждого шага:
+ * старт — восходящая капля пошире, конец фразы — нисходящая и собранная,
+ * ошибка — низкая и грязноватая, кодовое слово — две короткие капли подряд.
+ * Параметры подобраны с подачи gemini-auto (mode 4 «Argon»).
  */
 static const tone_step_t PATTERN_START[] = {
-    {500, 1500, 110, true},
+    {600, 1200, 100, 80, 6},
 };
 
 static const tone_step_t PATTERN_STOP_SENDING[] = {
-    {380, 900, 120, true},
+    {880, 440, 120, 120, 2},
 };
 
 static const tone_step_t PATTERN_ERROR[] = {
-    {260, 520, 170, true},
+    {300, 200, 150, 50, 12},
 };
 
 static const tone_step_t PATTERN_WAKE[] = {
-    {600, 1600, 100, true},
+    {500, 900, 50, 150, 8},
+    {0, 0, 40, 0, 0},
+    {900, 1400, 50, 150, 8},
 };
 
 static size_t tone_samples(uint16_t duration_ms)
@@ -90,7 +92,8 @@ static size_t tone_samples(uint16_t duration_ms)
  * Буфер выделяется в куче и освобождается вызывающим после отправки в кодек.
  */
 static esp_err_t generate_tone(uint16_t freq_hz, uint16_t end_hz, uint16_t duration_ms,
-                               bool decay, int16_t volume_percent, int16_t **out_pcm,
+                               uint16_t decay_x10, uint16_t detune_x1000,
+                               int16_t volume_percent, int16_t **out_pcm,
                                size_t *out_samples)
 {
     if (out_pcm == NULL || out_samples == NULL) {
@@ -105,7 +108,7 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t end_hz, uint16_t durat
         return ESP_OK;
     }
 
-    /* Буфер сразу стерео: левый и правый каналы расстроены на TONE_DETUNE. */
+    /* Буфер сразу стерео: правый канал расстроен относительно левого. */
     int16_t *pcm = calloc(samples * 2, sizeof(int16_t));
     if (pcm == NULL) {
         ESP_LOGE(TAG, "нет памяти под тон: %u сэмплов", (unsigned)samples);
@@ -130,6 +133,7 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t end_hz, uint16_t durat
         /* Плавный перепад: частота едет от freq_hz к end_hz линейно по шагу. */
         const float f_start = (float)freq_hz;
         const float f_end = (float)(end_hz != 0 ? end_hz : freq_hz);
+        const float detune = (float)detune_x1000 / 1000.0f;
         float phase_l = 0.0f;
         float phase_r = 0.0f;
 
@@ -146,16 +150,16 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t end_hz, uint16_t durat
             const float t = (float)i / (float)(samples > 1 ? samples - 1 : 1);
             const float freq = f_start + (f_end - f_start) * t;
 
-            if (decay) {
+            if (decay_x10 > 0) {
                 /* «Капля»: основная энергия в первые 20–30 мс, дальше хвост гаснет. */
-                gain *= expf(-4.5f * t);
+                gain *= expf(-0.1f * (float)decay_x10 * t);
             }
 
             const float left = sinf(phase_l) * amplitude * gain;
             const float right = sinf(phase_r) * amplitude * gain;
 
             phase_l += 2.0f * TONE_PI * freq / (float)TONE_SAMPLE_RATE;
-            phase_r += 2.0f * TONE_PI * freq * (1.0f + TONE_DETUNE) / (float)TONE_SAMPLE_RATE;
+            phase_r += 2.0f * TONE_PI * freq * (1.0f + detune) / (float)TONE_SAMPLE_RATE;
             if (phase_l > 2.0f * TONE_PI) {
                 phase_l -= 2.0f * TONE_PI;
             }
@@ -202,7 +206,8 @@ static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
         size_t part_samples = 0;
 
         const esp_err_t err = generate_tone(steps[i].freq_hz, steps[i].end_hz,
-                                            steps[i].duration_ms, steps[i].decay,
+                                            steps[i].duration_ms,
+                                            steps[i].decay_x10, steps[i].detune_x1000,
                                             volume_percent, &part, &part_samples);
         if (err != ESP_OK) {
             free(part);
