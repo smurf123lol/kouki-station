@@ -44,6 +44,9 @@ static const char *TAG = "kouki.tone";
 /* Хвост тишины после сигнала: 0,25 с стереопары при 16 кГц. */
 #define TONE_TAIL_FRAMES 4000u
 static int16_t s_tone_tail[TONE_TAIL_FRAMES * 2u];
+/* Короткий хвост для сигнала старта: запись начинается сразу после него. */
+#define TONE_TAIL_START_FRAMES 640u   /* 40 мс */
+static int16_t s_tone_tail_start[TONE_TAIL_START_FRAMES * 2u];
 #define TONE_FADE_MS       5
 #define TONE_FADE_SAMPLES  (TONE_SAMPLE_RATE * TONE_FADE_MS / 1000)
 #define TONE_PI            3.14159265358979323846f
@@ -292,7 +295,16 @@ void kouki_tone_play(kouki_tone_t tone)
      * стереопары = 4000 кадров; буфер статический и нулевой.
      */
     if (play_err == ESP_OK) {
-        esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);
+        /*
+         * START звучит прямо перед записью: длинный хвост съедал бы первый
+         * слог (0,25 с паузы), поэтому у него хвост короткий — его хватает,
+         * чтобы DMA не зациклил последний буфер.
+         */
+        if (tone == KOUKI_TONE_START) {
+            esp_audio_play(s_tone_tail_start, (int)sizeof(s_tone_tail_start), portMAX_DELAY);
+        } else {
+            esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);
+        }
     }
 
     /* esp_audio_play пишет в кодек блокирующе — буферу он больше не нужен. */
