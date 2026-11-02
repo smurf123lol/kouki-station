@@ -40,36 +40,49 @@ void kouki_tone_play(kouki_tone_t tone)
 static const char *TAG = "kouki.tone";
 
 #define TONE_SAMPLE_RATE   16000
+
+/* Хвост тишины после сигнала: 0,25 с стереопары при 16 кГц. */
+#define TONE_TAIL_FRAMES 4000u
+static int16_t s_tone_tail[TONE_TAIL_FRAMES * 2u];
+/* Короткий хвост для сигнала старта: запись начинается сразу после него. */
+#define TONE_TAIL_START_FRAMES 640u   /* 40 мс */
+static int16_t s_tone_tail_start[TONE_TAIL_START_FRAMES * 2u];
 #define TONE_FADE_MS       5
 #define TONE_FADE_SAMPLES  (TONE_SAMPLE_RATE * TONE_FADE_MS / 1000)
 #define TONE_PI            3.14159265358979323846f
 
 /* Шаг паттерна: частота и длительность. freq_hz == 0 — пауза (тишина). */
 typedef struct {
-    uint16_t freq_hz;
+    uint16_t freq_hz;       /* с какой частоты начинается шаг */
+    uint16_t end_hz;        /* куда приходит; 0 — держим freq_hz */
     uint16_t duration_ms;
+    uint16_t decay_x10;      /* как быстро гаснет капля: 45 = expf(-4.5·t) */
+    uint16_t detune_x1000;   /* расстройка правого канала: 4 = 0,4 % */
 } tone_step_t;
 
+/*
+ * Звучание: «капля» — короткий перепад высоты с быстрым спадом громкости.
+ * Спад (decay_x10) и расстройка каналов (detune_x1000) свои у каждого шага:
+ * старт — восходящая капля пошире, конец фразы — нисходящая и собранная,
+ * ошибка — низкая и грязноватая, кодовое слово — две короткие капли подряд.
+ * Параметры подобраны с подачи gemini-auto (mode 4 «Argon»).
+ */
 static const tone_step_t PATTERN_START[] = {
-    {1000, 120},
+    {600, 1200, 100, 80, 6},
 };
 
 static const tone_step_t PATTERN_STOP_SENDING[] = {
-    {800, 70},
-    {0, 30},        /* пауза внутри паттерна */
-    {1200, 90},
+    {880, 440, 120, 120, 2},
 };
 
 static const tone_step_t PATTERN_ERROR[] = {
-    {350, 100},
-    {0, 40},
-    {220, 140},
+    {300, 200, 150, 50, 12},
 };
 
 static const tone_step_t PATTERN_WAKE[] = {
-    {500, 50},
-    {750, 60},
-    {1000, 80},
+    {500, 900, 50, 150, 8},
+    {0, 0, 40, 0, 0},
+    {900, 1400, 50, 150, 8},
 };
 
 static size_t tone_samples(uint16_t duration_ms)
@@ -81,7 +94,8 @@ static size_t tone_samples(uint16_t duration_ms)
  * Синтез одного шага: синус 16 кГц PCM16 моно с fade-in/fade-out по 5 мс.
  * Буфер выделяется в куче и освобождается вызывающим после отправки в кодек.
  */
-static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
+static esp_err_t generate_tone(uint16_t freq_hz, uint16_t end_hz, uint16_t duration_ms,
+                               uint16_t decay_x10, uint16_t detune_x1000,
                                int16_t volume_percent, int16_t **out_pcm,
                                size_t *out_samples)
 {
@@ -97,7 +111,8 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
         return ESP_OK;
     }
 
-    int16_t *pcm = calloc(samples, sizeof(int16_t));
+    /* Буфер сразу стерео: правый канал расстроен относительно левого. */
+    int16_t *pcm = calloc(samples * 2, sizeof(int16_t));
     if (pcm == NULL) {
         ESP_LOGE(TAG, "нет памяти под тон: %u сэмплов", (unsigned)samples);
         return ESP_ERR_NO_MEM;
@@ -118,7 +133,12 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
             fade = samples / 2;
         }
 
-        const float step = 2.0f * TONE_PI * (float)freq_hz / (float)TONE_SAMPLE_RATE;
+        /* Плавный перепад: частота едет от freq_hz к end_hz линейно по шагу. */
+        const float f_start = (float)freq_hz;
+        const float f_end = (float)(end_hz != 0 ? end_hz : freq_hz);
+        const float detune = (float)detune_x1000 / 1000.0f;
+        float phase_l = 0.0f;
+        float phase_r = 0.0f;
 
         for (size_t i = 0; i < samples; i++) {
             float gain = 1.0f;
@@ -130,13 +150,28 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
                 gain = (float)(samples - 1 - i) / (float)fade;
             }
 
-            float value = sinf(step * (float)i) * amplitude * gain;
-            if (value > 32767.0f) {
-                value = 32767.0f;
-            } else if (value < -32768.0f) {
-                value = -32768.0f;
+            const float t = (float)i / (float)(samples > 1 ? samples - 1 : 1);
+            const float freq = f_start + (f_end - f_start) * t;
+
+            if (decay_x10 > 0) {
+                /* «Капля»: основная энергия в первые 20–30 мс, дальше хвост гаснет. */
+                gain *= expf(-0.1f * (float)decay_x10 * t);
             }
-            pcm[i] = (int16_t)value;
+
+            const float left = sinf(phase_l) * amplitude * gain;
+            const float right = sinf(phase_r) * amplitude * gain;
+
+            phase_l += 2.0f * TONE_PI * freq / (float)TONE_SAMPLE_RATE;
+            phase_r += 2.0f * TONE_PI * freq * (1.0f + detune) / (float)TONE_SAMPLE_RATE;
+            if (phase_l > 2.0f * TONE_PI) {
+                phase_l -= 2.0f * TONE_PI;
+            }
+            if (phase_r > 2.0f * TONE_PI) {
+                phase_r -= 2.0f * TONE_PI;
+            }
+
+            pcm[i * 2] = (int16_t)(left > 32767.0f ? 32767.0f : (left < -32768.0f ? -32768.0f : left));
+            pcm[i * 2 + 1] = (int16_t)(right > 32767.0f ? 32767.0f : (right < -32768.0f ? -32768.0f : right));
         }
     }
 
@@ -149,8 +184,8 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
  * Паттерн целиком: тоны и паузы в одном буфере, чтобы отдать кодеку один
  * блок и не ловить щелчки на стыках между отдельными вызовами.
  *
- * Синтез моно, но буфер сразу стерео: каждый моно-сэмпл дублируется в пару
- * L=R (см. шапку файла). out_frames — число моно-сэмплов, то есть кадров
+ * Каждый шаг синтезируется сразу в стерео: правый канал расстроен, поэтому
+ * кадры не совпадают по фазе и звук «шершавый». out_frames — число кадров
  * стерео; байт в буфере вдвое больше.
  */
 static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
@@ -173,7 +208,9 @@ static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
         int16_t *part = NULL;
         size_t part_samples = 0;
 
-        const esp_err_t err = generate_tone(steps[i].freq_hz, steps[i].duration_ms,
+        const esp_err_t err = generate_tone(steps[i].freq_hz, steps[i].end_hz,
+                                            steps[i].duration_ms,
+                                            steps[i].decay_x10, steps[i].detune_x1000,
                                             volume_percent, &part, &part_samples);
         if (err != ESP_OK) {
             free(part);
@@ -187,10 +224,7 @@ static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
             return ESP_ERR_INVALID_STATE;
         }
 
-        for (size_t s = 0; s < part_samples; s++) {
-            pcm[(offset + s) * 2] = part[s];        /* левый канал */
-            pcm[(offset + s) * 2 + 1] = part[s];    /* правый: тот же сэмпл */
-        }
+        memcpy(&pcm[offset * 2], part, part_samples * 2 * sizeof(int16_t));
         offset += part_samples;
         free(part);
     }
@@ -254,6 +288,24 @@ void kouki_tone_play(kouki_tone_t tone)
      */
     const int bytes = (int)(frames * 2u * sizeof(int16_t));
     const esp_err_t play_err = esp_audio_play(pcm, bytes, portMAX_DELAY);
+
+    /*
+     * Хвост тишины: DMA проигрывает последний буфер ещё раз, и короткий тон
+     * без паузы зацикливается (слышно как «дррр» вместо «пип»). 0,25 с
+     * стереопары = 4000 кадров; буфер статический и нулевой.
+     */
+    if (play_err == ESP_OK) {
+        /*
+         * START звучит прямо перед записью: длинный хвост съедал бы первый
+         * слог (0,25 с паузы), поэтому у него хвост короткий — его хватает,
+         * чтобы DMA не зациклил последний буфер.
+         */
+        if (tone == KOUKI_TONE_START) {
+            esp_audio_play(s_tone_tail_start, (int)sizeof(s_tone_tail_start), portMAX_DELAY);
+        } else {
+            esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);
+        }
+    }
 
     /* esp_audio_play пишет в кодек блокирующе — буферу он больше не нужен. */
     free(pcm);

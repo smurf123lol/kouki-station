@@ -19,7 +19,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WORKSPACE="$(cd "$REPO_ROOT/.." && pwd)"
+# Дерево задачи (git worktree) лежит в _scratch/wt/<имя>, поэтому воркспейс
+# считаем от общего каталога git: иначе _scratch, ESP-IDF и тулчейн искались бы
+# внутри wt/ и сборка падала на «нет ESP-IDF».
+COMMON_GIT="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$COMMON_GIT" ]; then
+    WORKSPACE="$(cd "$(dirname "$(dirname "$COMMON_GIT")")" && pwd)"
+else
+    WORKSPACE="$(cd "$REPO_ROOT/.." && pwd)"
+fi
 FIRMWARE="$REPO_ROOT/firmware"
 
 IDF_PATH="${IDF_PATH:-$WORKSPACE/_scratch/esp-idf}"
@@ -104,9 +112,9 @@ fi
 # читать в лог незачем.
 SDKCONFIG="$BUILD_DIR/sdkconfig"
 if [ -f "$SDKCONFIG" ]; then
-    DEFAULTS_FILES="${DEFAULTS//;/ }"
-    expected_ssid="$(sed -n 's/^CONFIG_KOUKI_WIFI_SSID="\(.*\)"/\1/p' $DEFAULTS_FILES | tail -1)"
-    expected_url="$(sed -n 's/^CONFIG_KOUKI_SERVER_URL="\(.*\)"/\1/p' $DEFAULTS_FILES | tail -1)"
+    IFS=';' read -r -a DEFAULTS_ARRAY <<< "$DEFAULTS"
+    expected_ssid="$(sed -n 's/^CONFIG_KOUKI_WIFI_SSID="\(.*\)"/\1/p' "${DEFAULTS_ARRAY[@]}" | tail -1)"
+    expected_url="$(sed -n 's/^CONFIG_KOUKI_SERVER_URL="\(.*\)"/\1/p' "${DEFAULTS_ARRAY[@]}" | tail -1)"
     stale=0
     if [ -n "$expected_ssid" ] && ! grep -qF "CONFIG_KOUKI_WIFI_SSID=\"$expected_ssid\"" "$SDKCONFIG"; then
         stale=1

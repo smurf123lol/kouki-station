@@ -9,6 +9,7 @@
 #include "app_ui.h"
 #include "app_voice.h"
 #include "app_wifi.h"
+#include "driver/gpio.h"
 #include "esp_board_init.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -67,6 +68,46 @@ static void wifi_task(void *arg)
     vTaskDelete(NULL);
 }
 
+
+/*
+ * Усилитель динамика и громкость кодека.
+ *
+ * Две вещи, без которых кодек отвечает ESP_OK, а звука нет:
+ *  - NS4150B включается высоким уровнем на GPIO 15 (в вендорном audio_board
+ *    GPIO_PWR_CTRL = -1, то есть нога не поднята);
+ *  - громкость в bsp_board.c ставится до esp_codec_dev_open, а ES8311 такой
+ *    вызов игнорирует — ставим её ещё раз, уже после открытия.
+ */
+static void kouki_player_init(void)
+{
+#if CONFIG_KOUKI_PLAYER_PA_GPIO >= 0
+    const gpio_num_t pa = (gpio_num_t)CONFIG_KOUKI_PLAYER_PA_GPIO;
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_KOUKI_PLAYER_PA_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    const esp_err_t pa_err = gpio_config(&cfg);
+    if (pa_err == ESP_OK) {
+        gpio_set_level(pa, 1);
+        ESP_LOGI(TAG, "усилитель динамика включён (GPIO %d)", CONFIG_KOUKI_PLAYER_PA_GPIO);
+    } else {
+        ESP_LOGW(TAG, "не удалось поднять усилитель (GPIO %d): %s",
+                 CONFIG_KOUKI_PLAYER_PA_GPIO, esp_err_to_name(pa_err));
+    }
+#endif
+
+    const esp_err_t vol_err = esp_audio_set_play_vol(CONFIG_KOUKI_PLAYER_VOLUME);
+    if (vol_err == ESP_OK) {
+        ESP_LOGI(TAG, "громкость выхода: %d %%", CONFIG_KOUKI_PLAYER_VOLUME);
+    } else {
+        ESP_LOGW(TAG, "кодек не принял громкость %d: %s", CONFIG_KOUKI_PLAYER_VOLUME,
+                 esp_err_to_name(vol_err));
+    }
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -83,6 +124,7 @@ void app_main(void)
      * затем LCD и LVGL.
      */
     ESP_ERROR_CHECK(esp_board_init(16000, 2, 16));
+    kouki_player_init();
     EXIO_Init();
     LCD_Init();
     LVGL_Init();

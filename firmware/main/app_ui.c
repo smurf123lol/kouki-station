@@ -52,8 +52,15 @@ static void toggle_recording(kouki_session_t session)
     }
 
     s_recording_session = session;
-    ESP_LOGI(TAG, "начинаю запись: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
-    kouki_voice_start_recording();
+    const esp_err_t start_err = kouki_voice_start_recording();
+    if (start_err == ESP_ERR_INVALID_STATE) {
+        /* Частая причина — станция ещё говорит; экран об этом молчал. */
+        ESP_LOGW(TAG, "запись не началась: станция занята (озвучивание или отправка)");
+    } else if (start_err != ESP_OK) {
+        ESP_LOGW(TAG, "запись не началась: %s", esp_err_to_name(start_err));
+    } else {
+        ESP_LOGI(TAG, "начинаю запись: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
+    }
 }
 
 static void on_task_clicked(lv_event_t *event)

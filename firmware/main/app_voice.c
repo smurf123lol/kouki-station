@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+#include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
 #include "cJSON.h"
@@ -397,6 +398,10 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
             total += (size_t)read;
         }
         response[total] = '\0';
+        if (total + 1 >= response_len) {
+            ESP_LOGW(TAG, "ответ сервера обрезан: %u байт — JSON может не разобраться",
+                     (unsigned)total);
+        }
     }
 
     esp_http_client_close(client);
@@ -417,6 +422,42 @@ static const char *json_string(const cJSON *root, const char *name)
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : NULL;
 }
 
+/* Срезает недописанный UTF-8-символ в конце строки (strncpy режет по байтам). */
+static void utf8_trim_tail(char *s)
+{
+    const size_t len = strlen(s);
+    size_t start = len;
+    size_t back = 0;
+
+    while (start > 0 && back < 3 && ((unsigned char)s[start - 1] & 0xC0) == 0x80) {
+        start--;
+        back++;
+    }
+    if (start == 0) {
+        return;
+    }
+
+    const unsigned char lead = (unsigned char)s[start - 1];
+    size_t need = 0;
+    if ((lead & 0x80) == 0) {
+        need = 1;
+    } else if ((lead & 0xE0) == 0xC0) {
+        need = 2;
+    } else if ((lead & 0xF0) == 0xE0) {
+        need = 3;
+    } else if ((lead & 0xF8) == 0xF0) {
+        need = 4;
+    } else {
+        s[len - 1] = '\0';   /* одиночный продолженный байт — мусор */
+        return;
+    }
+
+    if (len - (start - 1) >= need) {
+        return;               /* символ полный */
+    }
+    s[start - 1] = '\0';     /* последовательность оборвана — срезаем её */
+}
+
 static void copy_str(char *dst, size_t dst_len, const char *src)
 {
     if (!dst_len) {
@@ -428,6 +469,7 @@ static void copy_str(char *dst, size_t dst_len, const char *src)
     }
     strncpy(dst, src, dst_len - 1);
     dst[dst_len - 1] = '\0';
+    utf8_trim_tail(dst);
 }
 
 /* Разбирает ответ /api/voice — только те поля, которые показывает экран. */
@@ -489,7 +531,12 @@ static void send_task(void *arg)
     const uint32_t frames = (uint32_t)(s_sample_bytes / BYTES_PER_SAMPLE);
     result.duration_ms = (uint32_t)((uint64_t)frames * 1000 / SAMPLE_RATE);
 
-    char response[4096] = {0};
+    /*
+     * Ответ /api/voice с 480 символами кириллицы сервер отдаёт с \uXXXX-экранированием
+     * и дублирует вопрос, поэтому 4 КБ мало: живой замер — около 4,9 КБ на 480 символов.
+     * Буфер статический, чтобы не жечь стек задачи (8 КБ).
+     */
+    static char response[12288];
     /* WAV-заголовок и состояние SENDING выставил finish_recording: буфер заморожен. */
 
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
@@ -517,6 +564,16 @@ static void send_task(void *arg)
         publish(KOUKI_VOICE_ERROR, &result);
     } else {
         publish(KOUKI_VOICE_DONE, &result);
+    }
+
+    /*
+     * Голос — после экрана: ответ человек видит сразу, а речь идёт следом.
+     * Задача отправки уже ничего не держит, кроме себя, поэтому блокирующее
+     * воспроизведение живёт здесь и не мешает UI. Запись на это время
+     * откладывается (см. start_recording_internal).
+     */
+    if (result.error[0] == '\0' && result.answer[0] != '\0') {
+        kouki_speech_play(result.answer);
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
@@ -602,6 +659,12 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
         err = ESP_ERR_INVALID_STATE;
     } else if (s_starting) {
         /* Старт уже в работе (звучит сигнал): второй тон не играем. */
+        err = ESP_ERR_INVALID_STATE;
+    } else if (kouki_speech_busy()) {
+        /*
+         * Станция ещё говорит. Начать запись сейчас — значит записать
+         * собственную речь вместо человека, поэтому отказываем.
+         */
         err = ESP_ERR_INVALID_STATE;
     } else {
         s_starting = true;
