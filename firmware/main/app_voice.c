@@ -398,6 +398,10 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
             total += (size_t)read;
         }
         response[total] = '\0';
+        if (total + 1 >= response_len) {
+            ESP_LOGW(TAG, "ответ сервера обрезан: %u байт — JSON может не разобраться",
+                     (unsigned)total);
+        }
     }
 
     esp_http_client_close(client);
@@ -527,7 +531,12 @@ static void send_task(void *arg)
     const uint32_t frames = (uint32_t)(s_sample_bytes / BYTES_PER_SAMPLE);
     result.duration_ms = (uint32_t)((uint64_t)frames * 1000 / SAMPLE_RATE);
 
-    char response[4096] = {0};
+    /*
+     * Ответ /api/voice с 480 символами кириллицы сервер отдаёт с \uXXXX-экранированием
+     * и дублирует вопрос, поэтому 4 КБ мало: живой замер — около 4,9 КБ на 480 символов.
+     * Буфер статический, чтобы не жечь стек задачи (8 КБ).
+     */
+    static char response[12288];
     /* WAV-заголовок и состояние SENDING выставил finish_recording: буфер заморожен. */
 
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
