@@ -1,8 +1,10 @@
 #include "app_voice.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <inttypes.h>
 
+#include "app_tone.h"
 #include "app_wake.h"
 #include "cJSON.h"
 #include "esp_board_init.h"
@@ -26,6 +28,12 @@ static const char *TAG = "kouki.voice";
 
 static SemaphoreHandle_t s_lock;
 static kouki_voice_state_t s_state = KOUKI_VOICE_IDLE;
+/*
+ * Старт уже начат, но тон ещё звучит: состояние намеренно остаётся прежним
+ * (IDLE/DONE), чтобы record_task не писал сэмплы и сигнал не попал в запись.
+ * Второй старт в это окно отбивается — иначе на одно нажатие было бы два тона.
+ */
+static bool s_starting;
 static kouki_voice_result_t s_result;
 static kouki_session_t s_session = KOUKI_SESSION_TASK;
 
@@ -92,6 +100,16 @@ static void publish(kouki_voice_state_t state, const kouki_voice_result_t *resul
             s_result = copy;
         }
         xSemaphoreGive(s_lock);
+    }
+
+    /*
+     * Ошибка звучит ровно один раз на событие: сигнал централизован здесь, а не
+     * размазан по всем местам публикации KOUKI_VOICE_ERROR. Мьютекс уже отпущен:
+     * тон блокирует поток до 280 мс, а состояние и результат уже видны всем.
+     * DONE, RECORDING, SENDING и IDLE остаются без звука.
+     */
+    if (state == KOUKI_VOICE_ERROR) {
+        kouki_tone_play(KOUKI_TONE_ERROR);
     }
 
     if (s_cb) {
@@ -196,6 +214,7 @@ static bool IsLoudEnough(void);
 static void finish_recording(void);
 static void copy_str(char *dst, size_t dst_len, const char *src);
 static void send_task(void *arg);
+static esp_err_t start_recording_internal(kouki_tone_t signal);
 
 /* Владелец буфера? Состояние читают и задачи, и UI-таймер, поэтому под мьютексом. */
 static bool IsRecording(void)
@@ -227,8 +246,12 @@ static void idle_step(void)
     if (kouki_wake_feed(mono, RECORD_CHUNK)) {
         ESP_LOGI(TAG, "услышали кодовое слово (%s): записываю %d с",
                  kouki_wake_model(), CONFIG_KOUKI_WAKE_RECORD_S);
-        /* Пока идёт отправка предыдущей фразы, буфер занят: слово просто пропустим. */
-        if (kouki_voice_start_recording() == ESP_OK) {
+        /*
+         * Пока идёт отправка предыдущей фразы, буфер занят: слово просто пропустим.
+         * WAKE заменяет START, а не добавляется к нему — на срабатывание ровно
+         * один сигнал (тот же старт, только другой тон).
+         */
+        if (start_recording_internal(KOUKI_TONE_WAKE) == ESP_OK) {
             s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_WAKE_RECORD_S * 1000);
         }
     }
@@ -294,6 +317,14 @@ static void finish_recording(void)
 
     /* С этого момента буфер заморожен: его читает только send_task. */
     publish(KOUKI_VOICE_SENDING, &result);
+
+    /*
+     * Сигнал «запись завершена, отправляю» — синхронно и до создания send_task:
+     * HTTP-запрос начнётся только после него, поэтому тон не накладывается на
+     * отправку (190 мс в 30-секундный таймаут не упирается). Состояние уже
+     * SENDING, так что повторный старт записи в это время отбивается.
+     */
+    kouki_tone_play(KOUKI_TONE_STOP_SENDING);
 
     if (xTaskCreate(send_task, "kouki.send", 8192, NULL, 5, NULL) != pdPASS) {
         copy_str(result.error, sizeof(result.error), "Не удалось запустить отправку");
@@ -540,7 +571,14 @@ esp_err_t kouki_voice_set_session(kouki_session_t session)
     return ESP_OK;
 }
 
-esp_err_t kouki_voice_start_recording(void)
+/*
+ * Общий старт записи: кнопка и тестовый режим зовут его со START, кодовое
+ * слово — с WAKE. Тон играется ДО перевода состояния в RECORDING, поэтому
+ * record_task не успевает записать сам сигнал. Пока тон звучит, s_starting
+ * держит второй старт (повторный клик, сработавшее слово) от второго тона
+ * и второго старта.
+ */
+static esp_err_t start_recording_internal(kouki_tone_t signal)
 {
     if (!s_lock) {
         return ESP_ERR_INVALID_STATE;
@@ -551,6 +589,7 @@ esp_err_t kouki_voice_start_recording(void)
     }
 
     esp_err_t err = ESP_OK;
+    bool start = false;
 
     if (s_state == KOUKI_VOICE_RECORDING) {
         /* Повторный клик во время записи не должен её обнулять. */
@@ -561,22 +600,47 @@ esp_err_t kouki_voice_start_recording(void)
          * send_task прочитает полустёртую запись — поэтому отказываем.
          */
         err = ESP_ERR_INVALID_STATE;
+    } else if (s_starting) {
+        /* Старт уже в работе (звучит сигнал): второй тон не играем. */
+        err = ESP_ERR_INVALID_STATE;
     } else {
+        s_starting = true;
         s_sample_bytes = 0;
         s_stop_requested = false;
         s_wake_stop_tick = 0;
-        s_state = KOUKI_VOICE_RECORDING;    /* владелец буфера — record_task */
+        start = true;
     }
 
     xSemaphoreGive(s_lock);
 
-    if (err == ESP_OK) {
-        publish(KOUKI_VOICE_RECORDING, NULL);
-    } else {
-        ESP_LOGW(TAG, "запись не начата: идёт отправка предыдущей фразы");
+    if (!start) {
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "запись не начата: старт уже идёт или буфер занят отправкой");
+        }
+        return err;
     }
 
-    return err;
+    kouki_tone_play(signal);
+
+    /*
+     * Тон отыгран — только теперь запись становится активной. Мьютекс берём
+     * снова: всё это время состояние оставалось прежним, а второй старт
+     * отбивался флагом s_starting.
+     */
+    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    s_state = KOUKI_VOICE_RECORDING;    /* владелец буфера — record_task */
+    s_starting = false;
+    xSemaphoreGive(s_lock);
+
+    publish(KOUKI_VOICE_RECORDING, NULL);
+    return ESP_OK;
+}
+
+esp_err_t kouki_voice_start_recording(void)
+{
+    return start_recording_internal(KOUKI_TONE_START);
 }
 
 /// <summary>
