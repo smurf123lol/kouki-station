@@ -1,3 +1,11 @@
+/*
+ * Звуковые сигналы станции: синтез PCM16 16 кГц и вывод через аудиокодек.
+ *
+ * Воспроизведение открыто в стерео (main.c: esp_board_init(16000, 2, 16)),
+ * поэтому моно-сэмпл на отправке разворачивается в пару L=R: иначе
+ * bsp_audio_play трактует входной поток как чередующиеся каналы, и тон
+ * звучит вдвое короче и вдвое выше задуманного.
+ */
 #include "app_tone.h"
 
 #include <stddef.h>
@@ -140,19 +148,23 @@ static esp_err_t generate_tone(uint16_t freq_hz, uint16_t duration_ms,
 /*
  * Паттерн целиком: тоны и паузы в одном буфере, чтобы отдать кодеку один
  * блок и не ловить щелчки на стыках между отдельными вызовами.
+ *
+ * Синтез моно, но буфер сразу стерео: каждый моно-сэмпл дублируется в пару
+ * L=R (см. шапку файла). out_frames — число моно-сэмплов, то есть кадров
+ * стерео; байт в буфере вдвое больше.
  */
 static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
                                     int16_t volume_percent, int16_t **out_pcm,
-                                    size_t *out_samples)
+                                    size_t *out_frames)
 {
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
         total += tone_samples(steps[i].duration_ms);
     }
 
-    int16_t *pcm = calloc(total, sizeof(int16_t));
+    int16_t *pcm = calloc(total * 2, sizeof(int16_t));
     if (pcm == NULL) {
-        ESP_LOGE(TAG, "нет памяти под сигнал: %u сэмплов", (unsigned)total);
+        ESP_LOGE(TAG, "нет памяти под сигнал: %u кадров", (unsigned)total);
         return ESP_ERR_NO_MEM;
     }
 
@@ -175,13 +187,16 @@ static esp_err_t synthesize_pattern(const tone_step_t *steps, size_t count,
             return ESP_ERR_INVALID_STATE;
         }
 
-        memcpy(pcm + offset, part, part_samples * sizeof(int16_t));
+        for (size_t s = 0; s < part_samples; s++) {
+            pcm[(offset + s) * 2] = part[s];        /* левый канал */
+            pcm[(offset + s) * 2 + 1] = part[s];    /* правый: тот же сэмпл */
+        }
         offset += part_samples;
         free(part);
     }
 
     *out_pcm = pcm;
-    *out_samples = total;
+    *out_frames = total;
     return ESP_OK;
 }
 
@@ -220,23 +235,24 @@ void kouki_tone_play(kouki_tone_t tone)
     }
 
     int16_t *pcm = NULL;
-    size_t samples = 0;
+    size_t frames = 0;
     const esp_err_t synth_err = synthesize_pattern(steps, steps_count, (int16_t)volume,
-                                                   &pcm, &samples);
-    if (synth_err != ESP_OK || pcm == NULL || samples == 0) {
+                                                   &pcm, &frames);
+    if (synth_err != ESP_OK || pcm == NULL || frames == 0) {
         free(pcm);
         return;
     }
 
-    ESP_LOGD(TAG, "сигнал %d: %u сэмплов (%.0f мс)", (int)tone, (unsigned)samples,
-             1000.0f * (float)samples / (float)TONE_SAMPLE_RATE);
+    ESP_LOGD(TAG, "сигнал %d: %u кадров (%.0f мс)", (int)tone, (unsigned)frames,
+             1000.0f * (float)frames / (float)TONE_SAMPLE_RATE);
 
     /*
-     * length в esp_audio_play — БАЙТЫ, не сэмплы: bsp_audio_play внутри считает
-     * out_length = length * 2 и перебирает i < length / sizeof(int16_t)
-     * (components/audio_board/.../bsp_board.c:359-416).
+     * length в esp_audio_play — БАЙТЫ. Буфер уже стерео (L=R), поэтому
+     * frames * 2 канала * sizeof(int16_t). bsp_audio_play при 16-битном
+     * режиме разворачивает каждый int16 в int32 и сам удваивает length,
+     * ожидая на входе чередующиеся L/R (bsp_board.c:359-416).
      */
-    const int bytes = (int)(samples * sizeof(int16_t));
+    const int bytes = (int)(frames * 2u * sizeof(int16_t));
     const esp_err_t play_err = esp_audio_play(pcm, bytes, portMAX_DELAY);
 
     /* esp_audio_play пишет в кодек блокирующе — буферу он больше не нужен. */
