@@ -53,10 +53,11 @@ menu "Kouki Station"
 
     endmenu
 
-    menu "Wake-word"
+    menu "Динамик и озвучивание"
 
         config KOUKI_PLAYER_PA_GPIO
             int "GPIO усилителя динамика"
+            range -1 48
             default 15
             help
                 NS4150B на этой плате включается высоким уровнем на GPIO 15
@@ -90,6 +91,10 @@ menu "Kouki Station"
                 Требует сети до сервера и включённого синтеза на сервере
                 (без sherpa /api/speech отвечает 503 — станция просто
                 промолчит и напишет причину в лог).
+
+    endmenu
+
+    menu "Wake-word"
 
         config KOUKI_WAKE_ENABLED
             bool "Слушать кодовое слово в простое"

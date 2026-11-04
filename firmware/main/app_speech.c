@@ -37,6 +37,7 @@ bool kouki_speech_busy(void)
 #else
 
 #include "cJSON.h"
+#include "app_voice.h"
 #include "esp_board_init.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -321,7 +322,6 @@ esp_err_t kouki_speech_play(const char *text)
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_busy = true;
     ESP_LOGI(TAG, "озвучиваю ответ: %.40s%s", text, strlen(text) > 40 ? "…" : "");
 
     /*
@@ -331,7 +331,6 @@ esp_err_t kouki_speech_play(const char *text)
     const size_t chars = utf8_chars(text);
     char *trimmed = utf8_prefix_copy(text, KOUKI_SPEECH_MAX_CHARS);
     if (trimmed == NULL) {
-        s_busy = false;
         return ESP_ERR_NO_MEM;
     }
     if (chars > KOUKI_SPEECH_MAX_CHARS) {
@@ -343,17 +342,26 @@ esp_err_t kouki_speech_play(const char *text)
     free(trimmed);
 
     if (body == NULL) {
-        s_busy = false;
         return ESP_ERR_NO_MEM;
     }
 
     uint8_t *wav = NULL;
     size_t wav_len = 0;
+    /* Во время сетевого запроса s_busy НЕ взводится: кнопка записи остаётся рабочей */
     const esp_err_t fetch_err = fetch_wav(body, strlen(body), &wav, &wav_len);
     cJSON_free(body);
 
     esp_err_t err = fetch_err;
     if (err == ESP_OK) {
+        /* Проверяем, не началась ли новая запись/отправка, пока шёл HTTP-запрос */
+        kouki_voice_state_t voice_state = KOUKI_VOICE_IDLE;
+        kouki_voice_get_snapshot(&voice_state, NULL);
+        if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
+            ESP_LOGI(TAG, "во время запроса речи началась запись/отправка — воспроизведение отменено");
+            free(wav);
+            return ESP_OK;
+        }
+
         kouki_speech_wav_t info;
         err = kouki_speech_wav_parse(wav, wav_len, &info);
         if (err != ESP_OK) {
@@ -377,6 +385,8 @@ esp_err_t kouki_speech_play(const char *text)
 
                 ESP_LOGI(TAG, "озвучиваю %u кадров (%.1f с)", (unsigned)frames,
                          (double)frames / 16000.0);
+                /* s_busy взводится только на время фактического вывода в кодек */
+                s_busy = true;
                 err = esp_audio_play(samples, bytes, portMAX_DELAY);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "кодек не принял речь: %s", esp_err_to_name(err));
@@ -384,6 +394,7 @@ esp_err_t kouki_speech_play(const char *text)
                     /* Пауза после речи: закрывает хвост DMA и не даёт повтора. */
                     esp_audio_play(s_tail, (int)sizeof(s_tail), portMAX_DELAY);
                 }
+                s_busy = false;
             }
         }
     } else {
@@ -391,7 +402,6 @@ esp_err_t kouki_speech_play(const char *text)
     }
 
     free(wav);
-    s_busy = false;
     return err;
 }
 #endif // CONFIG_KOUKI_SPEECH_ENABLED
