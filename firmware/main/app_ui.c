@@ -35,6 +35,8 @@ static lv_obj_t *s_ask_label;
 static lv_obj_t *s_status;
 static lv_obj_t *s_answer;
 
+static void set_status(const char *text, uint32_t color);
+
 /* Буфер результата живёт статически, чтобы не нагружать стек app_main (+1.7 КБ) */
 static kouki_voice_result_t s_tick_result;
 
@@ -66,10 +68,34 @@ static void utf8_trim_tail(char *s)
 }
 
 static kouki_session_t s_recording_session = KOUKI_SESSION_TASK;
+static bool s_is_setup_mode = false;
+static char s_setup_text[128] = {0};
+
+void kouki_ui_show_setup(const char *ssid, const char *url)
+{
+    s_is_setup_mode = true;
+    snprintf(s_setup_text, sizeof(s_setup_text), "Wi-Fi: %s\nОткройте %s", ssid, url);
+    if (s_status != NULL) {
+        set_status("Не настроено", COLOR_WARN);
+    }
+    if (s_answer != NULL) {
+        lv_label_set_text(s_answer, s_setup_text);
+    }
+    if (s_button != NULL) {
+        lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ask_button != NULL) {
+        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 /* Начал/отправил: сессия выбирается кнопкой, а не угадывается по словам. */
 static void toggle_recording(kouki_session_t session)
 {
+    if (s_is_setup_mode) {
+        return;
+    }
+
     if (kouki_voice_is_recording()) {
         ESP_LOGI(TAG, "останавливаю запись");
         kouki_voice_stop_and_send();
@@ -115,6 +141,14 @@ static void set_status(const char *text, uint32_t color)
 static void ui_tick(lv_timer_t *timer)
 {
     (void)timer;
+
+    if (s_is_setup_mode) {
+        set_status("Не настроено", COLOR_WARN);
+        if (s_setup_text[0] != '\0') {
+            lv_label_set_text(s_answer, s_setup_text);
+        }
+        return;
+    }
 
     kouki_voice_state_t state = KOUKI_VOICE_IDLE;
     memset(&s_tick_result, 0, sizeof(s_tick_result));
@@ -251,6 +285,15 @@ void kouki_ui_init(void)
     lv_obj_set_style_text_color(s_answer, lv_color_hex(COLOR_SAND), 0);
     lv_obj_set_style_text_font(s_answer, &font_ru_14, 0);
     lv_obj_align(s_answer, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    if (s_is_setup_mode) {
+        set_status("Не настроено", COLOR_WARN);
+        if (s_setup_text[0] != '\0') {
+            lv_label_set_text(s_answer, s_setup_text);
+        }
+        lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
+    }
 
     lv_timer_create(ui_tick, 250, NULL);
 }

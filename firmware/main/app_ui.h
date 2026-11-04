@@ -17,6 +17,9 @@ extern "C" {
 /* Создаёт виджеты на текущем экране LVGL (вызывать после LVGL_Init). */
 void kouki_ui_init(void);
 
+/* Показывает экран первичной настройки (AP-режим). */
+void kouki_ui_show_setup(const char *ssid, const char *url);
+
 #ifdef __cplusplus
 }
 #endif

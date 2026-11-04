@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+#include "app_config.h"
 #include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
@@ -335,7 +336,11 @@ static void finish_recording(void)
 
 static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out)
 {
-    char url[192];
+    const char *srv_url = kouki_config_get_srv_url();
+    const char *dev_source = kouki_config_get_dev_source();
+    const char *srv_token = kouki_config_get_srv_token();
+
+    char url[300];
 
     /*
      * Сессия задаёт смысл записи, а не сервер угадывает его по словам:
@@ -344,10 +349,10 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
      */
     if (s_session == KOUKI_SESSION_TASK) {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
-                 CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
+                 srv_url, dev_source);
     } else {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask",
-                 CONFIG_KOUKI_SERVER_URL, CONFIG_KOUKI_SOURCE);
+                 srv_url, dev_source);
     }
 
     esp_http_client_config_t cfg = {
@@ -367,9 +372,9 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
     }
 
     esp_http_client_set_header(client, "Content-Type", "audio/wav");
-    if (strlen(CONFIG_KOUKI_SERVER_TOKEN) > 0) {
-        char auth[160];
-        snprintf(auth, sizeof(auth), "Bearer %s", CONFIG_KOUKI_SERVER_TOKEN);
+    if (srv_token != NULL && strlen(srv_token) > 0) {
+        char auth[300];
+        snprintf(auth, sizeof(auth), "Bearer %s", srv_token);
         esp_http_client_set_header(client, "Authorization", auth);
     }
 
@@ -613,7 +618,7 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
 #endif
 
     ESP_LOGI(TAG, "запись до %d с, канал %d, сервер %s", CONFIG_KOUKI_MAX_RECORD_S,
-             CONFIG_KOUKI_MIC_CHANNEL, CONFIG_KOUKI_SERVER_URL);
+             CONFIG_KOUKI_MIC_CHANNEL, kouki_config_get_srv_url());
     return ESP_OK;
 }
 
