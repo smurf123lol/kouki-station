@@ -3,8 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
+#include "mbedtls/x509_crt.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+
+extern const char _binary_kouki_local_root_pem_start[] asm("_binary_kouki_local_root_pem_start");
+extern const char _binary_kouki_local_root_pem_end[] asm("_binary_kouki_local_root_pem_end");
 
 static const char *TAG __attribute__((unused)) = "kouki.config";
 
@@ -61,6 +65,11 @@ esp_err_t kouki_config_init(void)
         strncpy(s_cfg.dev_source, KOUKI_CONFIG_DEFAULT_SOURCE, sizeof(s_cfg.dev_source) - 1);
     }
 
+    len = sizeof(s_cfg.ca_pem);
+    if (nvs_get_str(handle, "ca_pem", s_cfg.ca_pem, &len) != ESP_OK) {
+        s_cfg.ca_pem[0] = '\0';
+    }
+
     uint32_t ota = 0;
     if (nvs_get_u32(handle, "ota_int_s", &ota) == ESP_OK && ota > 0) {
         s_cfg.ota_int_s = ota;
@@ -87,9 +96,15 @@ bool kouki_config_is_complete(void)
     if (url_len == 0 || url_len > KOUKI_CONFIG_MAX_URL_LEN) {
         return false;
     }
+#if !CONFIG_KOUKI_ALLOW_HTTP
+    if (strncmp(s_cfg.srv_url, "https://", 8) != 0) {
+        return false;
+    }
+#else
     if (strncmp(s_cfg.srv_url, "http://", 7) != 0 && strncmp(s_cfg.srv_url, "https://", 8) != 0) {
         return false;
     }
+#endif
     const size_t token_len = strlen(s_cfg.srv_token);
     if (token_len < KOUKI_CONFIG_MIN_TOKEN_LEN || token_len > KOUKI_CONFIG_MAX_TOKEN_LEN) {
         return false;
@@ -120,6 +135,19 @@ const char *kouki_config_get_srv_token(void)
 const char *kouki_config_get_dev_source(void)
 {
     return s_cfg.dev_source[0] ? s_cfg.dev_source : KOUKI_CONFIG_DEFAULT_SOURCE;
+}
+
+const char *kouki_config_get_ca_pem(void)
+{
+    return s_cfg.ca_pem;
+}
+
+const char *kouki_config_get_effective_ca_pem(void)
+{
+    if (s_cfg.ca_pem[0] != '\0' && strstr(s_cfg.ca_pem, "-----BEGIN CERTIFICATE-----") != NULL) {
+        return s_cfg.ca_pem;
+    }
+    return _binary_kouki_local_root_pem_start;
 }
 
 uint32_t kouki_config_get_ota_interval_s(void)
@@ -154,9 +182,15 @@ esp_err_t kouki_config_set_url(const char *url)
     if (url == NULL || strlen(url) == 0 || strlen(url) > KOUKI_CONFIG_MAX_URL_LEN) {
         return ESP_ERR_INVALID_ARG;
     }
+#if !CONFIG_KOUKI_ALLOW_HTTP
+    if (strncmp(url, "https://", 8) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+#else
     if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
         return ESP_ERR_INVALID_ARG;
     }
+#endif
 
     strncpy(s_cfg.srv_url, url, sizeof(s_cfg.srv_url) - 1);
     s_cfg.srv_url[sizeof(s_cfg.srv_url) - 1] = '\0';
@@ -185,6 +219,33 @@ esp_err_t kouki_config_set_source(const char *source)
         strncpy(s_cfg.dev_source, source, sizeof(s_cfg.dev_source) - 1);
         s_cfg.dev_source[sizeof(s_cfg.dev_source) - 1] = '\0';
     }
+    return ESP_OK;
+}
+
+esp_err_t kouki_config_set_ca_pem(const char *pem)
+{
+    if (pem == NULL || pem[0] == '\0') {
+        s_cfg.ca_pem[0] = '\0';
+        return ESP_OK;
+    }
+    if (strlen(pem) > KOUKI_CONFIG_MAX_CA_PEM_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strstr(pem, "-----BEGIN CERTIFICATE-----") == NULL ||
+        strstr(pem, "-----END CERTIFICATE-----") == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)pem, strlen(pem) + 1);
+    mbedtls_x509_crt_free(&crt);
+    if (ret != 0) {
+        ESP_LOGW(TAG, "не удалось разобрать PEM сертификата: -0x%04x", -ret);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    strncpy(s_cfg.ca_pem, pem, sizeof(s_cfg.ca_pem) - 1);
+    s_cfg.ca_pem[sizeof(s_cfg.ca_pem) - 1] = '\0';
     return ESP_OK;
 }
 
@@ -220,6 +281,11 @@ esp_err_t kouki_config_save(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(handle, "srv_url", s_cfg.srv_url));
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(handle, "srv_token", s_cfg.srv_token));
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(handle, "dev_source", s_cfg.dev_source));
+    if (s_cfg.ca_pem[0] != '\0') {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(handle, "ca_pem", s_cfg.ca_pem));
+    } else {
+        nvs_erase_key(handle, "ca_pem");
+    }
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u32(handle, "ota_int_s", s_cfg.ota_int_s));
 
     err = nvs_commit(handle);
@@ -259,6 +325,7 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              "srv_url: %s\n"
              "srv_token: %s\n"
              "dev_source: %s\n"
+             "ca_pem: %s\n"
              "ota_int_s: %u\n",
              (unsigned)s_cfg.cfg_ver,
              s_cfg.wifi_ssid[0] ? "***" : "(не задан)",
@@ -266,5 +333,6 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              s_cfg.srv_url[0] ? s_cfg.srv_url : "(не задан)",
              s_cfg.srv_token[0] ? "***" : "(не задан)",
              s_cfg.dev_source[0] ? s_cfg.dev_source : KOUKI_CONFIG_DEFAULT_SOURCE,
+             s_cfg.ca_pem[0] ? "(пользовательский NVS)" : "(вшитый Caddy CA)",
              (unsigned)s_cfg.ota_int_s);
 }

@@ -19,6 +19,8 @@
 
 ## Запрос
 
+По умолчанию станция обращается к серверу по HTTPS (`CONFIG_KOUKI_SERVER_URL` = `https://kouki.local`, порт 443) с проверкой корневого pinned CA сервера. `http://` разрешён только при сборке с `CONFIG_KOUKI_ALLOW_HTTP=y`.
+
 ```
 POST {KOUKI_SERVER_URL}/api/voice?source={KOUKI_SOURCE}[&intent=add_task|ask]
 Authorization: Bearer {KOUKI_SERVER_TOKEN}

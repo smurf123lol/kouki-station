@@ -4,6 +4,7 @@ idf_component_register(
         "./app_config.c"
         "./app_setup.c"
         "./app_wifi.c"
+        "./app_http.c"
         "./app_voice.c"
         "./app_ui.c"
         "./app_wake.c"
@@ -37,6 +38,8 @@ idf_component_register(
         esp_wifi
         esp_event
         esp_netif
+        esp-tls
+        esp_driver_usb_serial_jtag
         nvs_flash
         json
         # esp_crt_bundle.h живёт в mbedtls: нужен для https без своего CA.
@@ -45,6 +48,8 @@ idf_component_register(
         espressif__esp_codec_dev
         # Wake-word: esp-sr (модели — в разделе model, см. partitions.csv)
         espressif__esp-sr
+    EMBED_TXTFILES
+        "certs/kouki-local-root.pem"
 )
 
 # esp-dl собирает только те ядра, что перечислены в compile_req-файлах компонентов.

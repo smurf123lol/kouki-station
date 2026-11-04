@@ -7,6 +7,9 @@
 
 #include "app_config.h"
 #include "app_ui.h"
+#include "app_voice.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -16,6 +19,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/x509_crt.h"
 
 static const char *TAG = "kouki.setup";
 
@@ -49,13 +53,15 @@ static bool get_form_param(const char *body, const char *key, char *out, size_t 
             const char *val_start = p + key_len + 1;
             const char *val_end = strchr(val_start, '&');
             size_t val_len = val_end ? (size_t)(val_end - val_start) : strlen(val_start);
-            char enc[300];
-            if (val_len >= sizeof(enc)) {
-                val_len = sizeof(enc) - 1;
+            char *enc = malloc(val_len + 1);
+            if (enc == NULL) {
+                out[0] = '\0';
+                return false;
             }
             memcpy(enc, val_start, val_len);
             enc[val_len] = '\0';
             url_decode(out, enc, out_max);
+            free(enc);
             return true;
         }
         p = strchr(p, '&');
@@ -87,8 +93,9 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "p.sub { font-size: 13px; color: #8b7d66; text-align: center; margin: 0 0 20px; }"
         ".field { margin-bottom: 14px; }"
         "label { display: block; font-size: 13px; color: #8b7d66; margin-bottom: 5px; }"
-        "input { width: 100%; padding: 10px; background: #0b0a08; border: 1px solid #332d24; border-radius: 6px; color: #e2d2b2; font-size: 14px; outline: none; }"
-        "input:focus { border-color: #d8552f; }"
+        "input, textarea { width: 100%; padding: 10px; background: #0b0a08; border: 1px solid #332d24; border-radius: 6px; color: #e2d2b2; font-size: 14px; outline: none; }"
+        "input:focus, textarea:focus { border-color: #d8552f; }"
+        "textarea { font-family: monospace; font-size: 12px; resize: vertical; }"
         ".hint { font-size: 11px; color: #635745; margin-top: 4px; }"
         "button { width: 100%; padding: 12px; margin-top: 10px; background: #d8552f; color: #0b0a08; font-weight: bold; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }"
         "</style></head><body><div class=\"card\">"
@@ -96,9 +103,10 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<form method=\"POST\" action=\"/save\">"
         "<div class=\"field\"><label>Имя сети Wi-Fi (SSID)</label><input type=\"text\" name=\"wifi_ssid\" maxlength=\"32\" required placeholder=\"MyHomeWiFi\"></div>"
         "<div class=\"field\"><label>Пароль Wi-Fi</label><input type=\"password\" name=\"wifi_pass\" maxlength=\"64\" placeholder=\"оставьте пустым для открытой\"></div>"
-        "<div class=\"field\"><label>Адрес сервера</label><input type=\"text\" name=\"srv_url\" maxlength=\"128\" required placeholder=\"http://192.168.1.157:5300\"><div class=\"hint\">http:// или https://</div></div>"
+        "<div class=\"field\"><label>Адрес сервера</label><input type=\"text\" name=\"srv_url\" maxlength=\"128\" required placeholder=\"https://kouki.local\"><div class=\"hint\">https://kouki.local</div></div>"
         "<div class=\"field\"><label>Bearer-токен</label><input type=\"password\" name=\"srv_token\" minlength=\"8\" maxlength=\"256\" required placeholder=\"мин. 8 символов\"></div>"
         "<div class=\"field\"><label>Метка источника</label><input type=\"text\" name=\"dev_source\" maxlength=\"32\" value=\"station\"></div>"
+        "<div class=\"field\"><label>Сертификат CA (PEM, необязательно)</label><textarea name=\"ca_pem\" rows=\"4\" placeholder=\"-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE----- (пусто — вшитый CA)\"></textarea><div class=\"hint\">Оставьте пустым для вшитого kouki.local CA</div></div>"
         "<button type=\"submit\">Сохранить</button>"
         "</form></div></body></html>";
 
@@ -108,15 +116,21 @@ static esp_err_t index_get_handler(httpd_req_t *req)
 
 static esp_err_t save_post_handler(httpd_req_t *req)
 {
-    char buf[1024];
     int remaining = req->content_len;
-    if (remaining <= 0 || remaining >= (int)sizeof(buf)) {
+    if (remaining <= 0 || remaining > 8192) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Запрос слишком велик");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(remaining + 1);
+    if (buf == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Нет памяти");
         return ESP_FAIL;
     }
 
     int received = httpd_req_recv(req, buf, remaining);
     if (received <= 0) {
+        free(buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Ошибка чтения");
         return ESP_FAIL;
     }
@@ -127,17 +141,20 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     char url[256] = {0};
     char token[300] = {0};
     char src[64] = {0};
+    char ca_pem[KOUKI_CONFIG_MAX_CA_PEM_LEN + 1] = {0};
 
     get_form_param(buf, "wifi_ssid", ssid, sizeof(ssid));
     get_form_param(buf, "wifi_pass", pass, sizeof(pass));
     get_form_param(buf, "srv_url", url, sizeof(url));
     get_form_param(buf, "srv_token", token, sizeof(token));
     get_form_param(buf, "dev_source", src, sizeof(src));
+    get_form_param(buf, "ca_pem", ca_pem, sizeof(ca_pem));
 
     if (strlen(ssid) == 0) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_send(req, "SSID не может быть пустым", HTTPD_RESP_USE_STRLEN);
+        free(buf);
         return ESP_OK;
     }
 
@@ -145,20 +162,68 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_send(req, "URL должен начинаться с http:// или https://", HTTPD_RESP_USE_STRLEN);
+        free(buf);
         return ESP_OK;
     }
+
+#if !CONFIG_KOUKI_ALLOW_HTTP
+    if (strncmp(url, "https://", 8) != 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_send(req, "Только https://: включите CONFIG_KOUKI_ALLOW_HTTP для отладки", HTTPD_RESP_USE_STRLEN);
+        free(buf);
+        return ESP_OK;
+    }
+#endif
 
     if (strlen(token) < KOUKI_CONFIG_MIN_TOKEN_LEN) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_send(req, "Токен слишком короткий", HTTPD_RESP_USE_STRLEN);
+        free(buf);
         return ESP_OK;
+    }
+
+    char *p_pem = ca_pem;
+    while (*p_pem && isspace((unsigned char)*p_pem)) {
+        p_pem++;
+    }
+    char *end_pem = p_pem + strlen(p_pem);
+    while (end_pem > p_pem && isspace((unsigned char)*(end_pem - 1))) {
+        end_pem--;
+    }
+    *end_pem = '\0';
+
+    if (p_pem[0] != '\0') {
+        if (strstr(p_pem, "-----BEGIN CERTIFICATE-----") == NULL ||
+            strstr(p_pem, "-----END CERTIFICATE-----") == NULL) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain; charset=utf-8");
+            httpd_resp_send(req, "Сертификат CA: ожидался PEM (-----BEGIN CERTIFICATE-----).", HTTPD_RESP_USE_STRLEN);
+            free(buf);
+            return ESP_OK;
+        }
+
+        mbedtls_x509_crt crt;
+        mbedtls_x509_crt_init(&crt);
+        int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)p_pem, strlen(p_pem) + 1);
+        mbedtls_x509_crt_free(&crt);
+        if (ret != 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain; charset=utf-8");
+            httpd_resp_send(req, "Сертификат CA не разбирается.", HTTPD_RESP_USE_STRLEN);
+            free(buf);
+            return ESP_OK;
+        }
     }
 
     kouki_config_set_wifi(ssid, pass);
     kouki_config_set_url(url);
     kouki_config_set_token(token);
     kouki_config_set_source(src[0] ? src : KOUKI_CONFIG_DEFAULT_SOURCE);
+    kouki_config_set_ca_pem(p_pem);
+
+    free(buf);
 
     esp_err_t err = kouki_config_save();
     if (err != ESP_OK) {
@@ -271,6 +336,10 @@ static void handle_console_command(const char *cmd)
                "  show                    — показать текущие настройки (секреты скрыты ***)\n"
                "  save                    — сохранить настройки в NVS\n"
                "  reset                   — очистить настройки в NVS\n"
+               "  record                  — начать голосовую запись (сессия TASK)\n"
+               "  stop                    — остановить запись и отправить на сервер\n"
+               "  ask                     — начать голосовую запись (сессия ASK)\n"
+               "  diag                    — показать свободную память (heap/PSRAM)\n"
                "  reboot                  — перезагрузить станцию\n"
                "  help                    — эта справка\n\n");
     } else if (strncmp(cmd, "set_wifi ", 9) == 0) {
@@ -312,7 +381,11 @@ static void handle_console_command(const char *cmd)
         if (err == ESP_OK) {
             printf("OK (URL выставлен, выполните 'save' для сохранения в NVS)\n");
         } else {
+#if !CONFIG_KOUKI_ALLOW_HTTP
+            printf("Ошибка: незащищённый HTTP запрещён (CONFIG_KOUKI_ALLOW_HTTP=n). Используйте https://\n");
+#else
             printf("Ошибка: URL должен начинаться с http:// или https://\n");
+#endif
         }
     } else if (strncmp(cmd, "set_source ", 11) == 0) {
         const char *src = cmd + 11;
@@ -333,6 +406,21 @@ static void handle_console_command(const char *cmd)
     } else if (strcmp(cmd, "reset") == 0) {
         kouki_config_erase();
         printf("OK (настройки очищены из NVS)\n");
+    } else if (strcmp(cmd, "record") == 0) {
+        printf("Запуск записи (сессия TASK)…\n");
+        kouki_voice_set_session(KOUKI_SESSION_TASK);
+        kouki_voice_start_recording();
+    } else if (strcmp(cmd, "stop") == 0) {
+        printf("Остановка записи и отправка на сервер…\n");
+        kouki_voice_stop_and_send();
+    } else if (strcmp(cmd, "ask") == 0) {
+        printf("Запуск записи (сессия ASK)…\n");
+        kouki_voice_set_session(KOUKI_SESSION_ASK);
+        kouki_voice_start_recording();
+    } else if (strcmp(cmd, "diag") == 0) {
+        printf("Свободная память кучи: %u байт, PSRAM: %u байт\n",
+               (unsigned)esp_get_free_heap_size(),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     } else if (strcmp(cmd, "reboot") == 0) {
         printf("Перезагрузка…\n");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -367,6 +455,13 @@ static void console_task(void *arg)
 
 esp_err_t kouki_setup_console_init(void)
 {
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    if (err == ESP_OK) {
+        usb_serial_jtag_vfs_use_driver();
+        usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CRLF);
+        usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+    }
     BaseType_t res = xTaskCreate(console_task, "kouki.console", 4096, NULL, 3, NULL);
     return res == pdPASS ? ESP_OK : ESP_FAIL;
 }

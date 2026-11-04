@@ -14,6 +14,7 @@
 #define KOUKI_CONFIG_MAX_URL_LEN    128
 #define KOUKI_CONFIG_MAX_TOKEN_LEN  256
 #define KOUKI_CONFIG_MAX_SOURCE_LEN 32
+#define KOUKI_CONFIG_MAX_CA_PEM_LEN 4096
 
 #define KOUKI_CONFIG_MIN_TOKEN_LEN  8
 
@@ -27,6 +28,7 @@ typedef struct {
     char srv_url[KOUKI_CONFIG_MAX_URL_LEN + 1];
     char srv_token[KOUKI_CONFIG_MAX_TOKEN_LEN + 1];
     char dev_source[KOUKI_CONFIG_MAX_SOURCE_LEN + 1];
+    char ca_pem[KOUKI_CONFIG_MAX_CA_PEM_LEN + 1];
     uint32_t ota_int_s;
 } kouki_config_t;
 
@@ -52,6 +54,8 @@ const char *kouki_config_get_wifi_pass(void);
 const char *kouki_config_get_srv_url(void);
 const char *kouki_config_get_srv_token(void);
 const char *kouki_config_get_dev_source(void);
+const char *kouki_config_get_ca_pem(void);
+const char *kouki_config_get_effective_ca_pem(void);
 uint32_t kouki_config_get_ota_interval_s(void);
 
 /* Сеттеры / валидаторы */
@@ -59,6 +63,7 @@ esp_err_t kouki_config_set_wifi(const char *ssid, const char *pass);
 esp_err_t kouki_config_set_url(const char *url);
 esp_err_t kouki_config_set_token(const char *token);
 esp_err_t kouki_config_set_source(const char *source);
+esp_err_t kouki_config_set_ca_pem(const char *pem);
 esp_err_t kouki_config_set_ota_interval(uint32_t interval_s);
 
 /**

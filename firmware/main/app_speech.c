@@ -38,6 +38,7 @@ bool kouki_speech_busy(void)
 
 #include "cJSON.h"
 #include "app_config.h"
+#include "app_http.h"
 #include "app_voice.h"
 #include "esp_board_init.h"
 #include "esp_crt_bundle.h"
@@ -219,6 +220,10 @@ typedef struct {
 
 static esp_err_t speech_http_event(esp_http_client_event_t *evt)
 {
+    if (evt->event_id == HTTP_EVENT_ON_CONNECTED) {
+        kouki_http_on_connected(kouki_config_get_srv_url());
+    }
+
     speech_sink_t *sink = (speech_sink_t *)evt->user_data;
     if (sink == NULL) {
         return ESP_OK;
@@ -264,15 +269,13 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf,
         .buffer_size = 4096,
         .user_data = &sink,
         .event_handler = speech_http_event,
-#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
-        .crt_bundle_attach = esp_crt_bundle_attach,
-#endif
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (client == NULL) {
+    esp_http_client_handle_t client = NULL;
+    esp_err_t err = kouki_http_new_client(&cfg, &client);
+    if (err != ESP_OK || client == NULL) {
         free(buf);
-        return ESP_ERR_NO_MEM;
+        return err != ESP_OK ? err : ESP_ERR_NO_MEM;
     }
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -283,15 +286,18 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf,
     }
     esp_http_client_set_post_field(client, body, (int)body_len);
 
-    const esp_err_t err = esp_http_client_perform(client);
+    err = esp_http_client_perform(client);
     const int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
 
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "запрос речи не прошёл: %s", esp_err_to_name(err));
+        char diag[128] = {0};
+        kouki_http_diagnose_error(client, url, err, diag, sizeof(diag));
+        ESP_LOGW(TAG, "запрос речи не прошёл: %s (%s)", esp_err_to_name(err), diag);
+        esp_http_client_cleanup(client);
         free(buf);
         return err;
     }
+    esp_http_client_cleanup(client);
 
     if (status != 200) {
         /* Тело ошибки короткое ({"error": "..."}) — печатаем его в лог. */

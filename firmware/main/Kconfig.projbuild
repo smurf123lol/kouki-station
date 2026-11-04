@@ -209,6 +209,31 @@ menu "Kouki Station"
 
     endmenu
 
+    menu "Сервер и безопасность (TLS)"
+
+        config KOUKI_SERVER_URL
+            string "URL сервера по умолчанию"
+            default "https://kouki.local"
+            help
+                URL сервера Kouki (https://kouki.local). После настройки через SoftAP-портал
+                перекрывается значением из NVS (srv_url).
+
+        config KOUKI_ALLOW_HTTP
+            bool "Разрешить незащищённый HTTP (отладка)"
+            default n
+            help
+                По умолчанию ВЫКЛЮЧЕНО: станция требует https:// и проверяет pinned CA.
+                Включение разрешает http:// для стендов и локальной отладки.
+
+        config KOUKI_TLS_TIMEOUT_S
+            int "Таймаут TLS handshake, секунд"
+            default 10
+            range 2 60
+            help
+                Максимальное время на установку TLS-соединения с сервером.
+
+    endmenu
+
 endmenu
 
 config KOUKI_DEBUG_MIC

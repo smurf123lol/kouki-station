@@ -27,6 +27,25 @@ git clone --depth 1 -b v5.5.1 --recurse-submodules --shallow-submodules https://
 ./tools/build-native.ps1 -Secret
 ```
 
+## HTTPS и корневой сертификат сервера (pinned CA)
+
+Станция обращается к серверу Kouki по HTTPS (`https://kouki.local`) и валидирует сертификат сервера по корневому CA (`firmware/main/certs/kouki-local-root.pem`), вшитому в образ прошивки.
+
+### Экспорт корневого CA с сервера Caddy
+Корневой сертификат генерируется Caddy при использовании `tls internal`:
+```bash
+# Путь на сервере:
+/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+
+# Копирование в дерево сборки станции:
+cp /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt \
+   firmware/main/certs/kouki-local-root.pem
+```
+
+### Ротация CA без перепрошивки
+1. **Через SoftAP-портал (`http://192.168.4.1`)**: в поле «Сертификат CA (PEM)» ввести новый сертификат. Он сохранится в NVS (`ca_pem`) и имеет приоритет над вшитым в образ.
+2. **Через сетевое OTA (T16)**: новый образ прошивки с обновлённым `kouki-local-root.pem` доставляется по сети.
+
 ## Грабли, на которые уже наступили
 
 **Путь с пробелом.** Компилятор Xtensa падает с

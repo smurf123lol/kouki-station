@@ -5,6 +5,7 @@
 #include <inttypes.h>
 
 #include "app_config.h"
+#include "app_http.h"
 #include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
@@ -334,7 +335,7 @@ static void finish_recording(void)
     }
 }
 
-static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out)
+static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *response, size_t response_len, int *status_out, char *err_msg_out, size_t err_msg_len)
 {
     const char *srv_url = kouki_config_get_srv_url();
     const char *dev_source = kouki_config_get_dev_source();
@@ -360,15 +361,15 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
         .method = HTTP_METHOD_POST,
         .timeout_ms = 30000,
         .buffer_size = 4096,
-#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
-        /* https работает через встроенный набор корневых сертификатов: своего CA не нужно. */
-        .crt_bundle_attach = esp_crt_bundle_attach,
-#endif
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        return ESP_ERR_NO_MEM;
+    esp_http_client_handle_t client = NULL;
+    esp_err_t err = kouki_http_new_client(&cfg, &client);
+    if (err != ESP_OK || client == NULL) {
+        if (err_msg_out != NULL && err_msg_len > 0) {
+            kouki_http_diagnose_error(NULL, url, err, err_msg_out, err_msg_len);
+        }
+        return err != ESP_OK ? err : ESP_ERR_NO_MEM;
     }
 
     esp_http_client_set_header(client, "Content-Type", "audio/wav");
@@ -378,7 +379,7 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
         esp_http_client_set_header(client, "Authorization", auth);
     }
 
-    esp_err_t err = esp_http_client_open(client, (int)wav_len);
+    err = esp_http_client_open(client, (int)wav_len);
     if (err == ESP_OK) {
         int written = esp_http_client_write(client, (const char *)wav, (int)wav_len);
         if (written != (int)wav_len) {
@@ -406,6 +407,12 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
         if (total + 1 >= response_len) {
             ESP_LOGW(TAG, "ответ сервера обрезан: %u байт — JSON может не разобраться",
                      (unsigned)total);
+        }
+    }
+
+    if (err != ESP_OK || status == 0) {
+        if (err_msg_out != NULL && err_msg_len > 0) {
+            kouki_http_diagnose_error(client, url, err, err_msg_out, err_msg_len);
         }
     }
 
@@ -547,7 +554,7 @@ static void send_task(void *arg)
 
     /* Тик и HTTP живут в одной задаче; сторожевой таймер не трогаем. */
     const esp_err_t err = http_post_wav(s_buf, WAV_HEADER_SIZE + s_sample_bytes, response, sizeof(response),
-                                       &result.http_status);
+                                       &result.http_status, result.error, sizeof(result.error));
     if (err != ESP_OK) {
         /*
          * Статус и тело ответа важны по отдельности: «Сервер недоступен» — это не то же
@@ -556,10 +563,11 @@ static void send_task(void *arg)
          */
         if (result.http_status > 0) {
             snprintf(result.error, sizeof(result.error), "Сервер ответил HTTP %d", result.http_status);
-        } else {
-            copy_str(result.error, sizeof(result.error), "Сервер недоступен");
+        } else if (result.error[0] == '\0') {
+            copy_str(result.error, sizeof(result.error), "Нет связи с сервером.");
         }
-        ESP_LOGW(TAG, "ответ сервера (HTTP %d): %.160s", result.http_status, response);
+        ESP_LOGW(TAG, "ответ сервера (HTTP %d, err=%s): %.160s (текст: %s)",
+                 result.http_status, esp_err_to_name(err), response, result.error);
         publish(KOUKI_VOICE_ERROR, &result);
         vTaskDelete(NULL);
         return;
