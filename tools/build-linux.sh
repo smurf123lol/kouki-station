@@ -101,6 +101,10 @@ fi
 DEFAULTS="sdkconfig.defaults"
 if [ "$USE_SECRET" -eq 1 ]; then
     [ -f "$FIRMWARE/sdkconfig.secret" ] || die "нет firmware/sdkconfig.secret (--secret без него бессмыслен)"
+    token="$(sed -n 's/^CONFIG_KOUKI_SERVER_TOKEN="\(.*\)"/\1/p' "$FIRMWARE/sdkconfig.secret" | tail -1)"
+    if [ -z "$token" ] || [ "${#token}" -lt 8 ]; then
+        die "в firmware/sdkconfig.secret токен сервера пуст или короче 8 символов (CONFIG_KOUKI_SERVER_TOKEN)"
+    fi
     DEFAULTS="sdkconfig.defaults;sdkconfig.secret"
 fi
 

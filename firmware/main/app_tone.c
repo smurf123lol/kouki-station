@@ -296,11 +296,11 @@ void kouki_tone_play(kouki_tone_t tone)
      */
     if (play_err == ESP_OK) {
         /*
-         * START звучит прямо перед записью: длинный хвост съедал бы первый
-         * слог (0,25 с паузы), поэтому у него хвост короткий — его хватает,
+         * START и WAKE звучат прямо перед записью: длинный хвост съедал бы первый
+         * слог (0,25 с паузы), поэтому у них хвост короткий (<=40 мс) — его хватает,
          * чтобы DMA не зациклил последний буфер.
          */
-        if (tone == KOUKI_TONE_START) {
+        if (tone == KOUKI_TONE_START || tone == KOUKI_TONE_WAKE) {
             esp_audio_play(s_tone_tail_start, (int)sizeof(s_tone_tail_start), portMAX_DELAY);
         } else {
             esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);

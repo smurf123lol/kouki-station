@@ -35,6 +35,36 @@ static lv_obj_t *s_ask_label;
 static lv_obj_t *s_status;
 static lv_obj_t *s_answer;
 
+/* Буфер результата живёт статически, чтобы не нагружать стек app_main (+1.7 КБ) */
+static kouki_voice_result_t s_tick_result;
+
+/* Срезает недописанный UTF-8 символ в конце строки при обрезке */
+static void utf8_trim_tail(char *s)
+{
+    if (s == NULL) {
+        return;
+    }
+    const size_t len = strlen(s);
+    size_t start = len;
+    size_t back = 0;
+    while (start > 0 && back < 3 && ((unsigned char)s[start - 1] & 0xC0) == 0x80) {
+        start--;
+        back++;
+    }
+    if (start == 0) {
+        return;
+    }
+    const unsigned char lead = (unsigned char)s[start - 1];
+    size_t need = 0;
+    if ((lead & 0x80) == 0) need = 1;
+    else if ((lead & 0xE0) == 0xC0) need = 2;
+    else if ((lead & 0xF0) == 0xE0) need = 3;
+    else if ((lead & 0xF8) == 0xF0) need = 4;
+    if (need > 0 && (len - (start - 1)) < need) {
+        s[start - 1] = '\0';
+    }
+}
+
 static kouki_session_t s_recording_session = KOUKI_SESSION_TASK;
 
 /* Начал/отправил: сессия выбирается кнопкой, а не угадывается по словам. */
@@ -87,8 +117,8 @@ static void ui_tick(lv_timer_t *timer)
     (void)timer;
 
     kouki_voice_state_t state = KOUKI_VOICE_IDLE;
-    kouki_voice_result_t result = {0};
-    kouki_voice_get_snapshot(&state, &result);
+    memset(&s_tick_result, 0, sizeof(s_tick_result));
+    kouki_voice_get_snapshot(&state, &s_tick_result);
 
     switch (state) {
     case KOUKI_VOICE_IDLE:
@@ -121,31 +151,33 @@ static void ui_tick(lv_timer_t *timer)
         char text[256] = {0};
         size_t used = 0;
 
-        if (result.error[0] != '\0') {
+        if (s_tick_result.error[0] != '\0') {
             set_status("Не вышло", COLOR_DANGER);
-            snprintf(text, sizeof(text), "%s", result.error);
+            snprintf(text, sizeof(text), "%s", s_tick_result.error);
+            utf8_trim_tail(text);
             lv_label_set_text(s_answer, text);
         } else {
-            const char *outcome = result.outcome[0] ? result.outcome : "executed";
-            const bool has_answer = result.answer[0] != '\0';
+            const char *outcome = s_tick_result.outcome[0] ? s_tick_result.outcome : "executed";
+            const bool has_answer = s_tick_result.answer[0] != '\0';
             set_status(has_answer                          ? "Ответ"
                        : strcmp(outcome, "created") == 0   ? "Задача записана"
                        : strcmp(outcome, "executed") == 0  ? "Готово"
                        : "На разбор", COLOR_OK);
 
-            if (result.has_transcript && result.transcript[0] != '\0') {
-                used += (size_t)snprintf(text + used, sizeof(text) - used, "«%s»\n", result.transcript);
+            if (s_tick_result.has_transcript && s_tick_result.transcript[0] != '\0') {
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "«%s»\n", s_tick_result.transcript);
             }
             if (has_answer) {
-                used += (size_t)snprintf(text + used, sizeof(text) - used, "%s", result.answer);
-            } else if (result.task_title[0] != '\0') {
-                used += (size_t)snprintf(text + used, sizeof(text) - used, "Задача: %s", result.task_title);
-            } else if (result.command[0] != '\0') {
-                used += (size_t)snprintf(text + used, sizeof(text) - used, "Команда: %s", result.command);
-            } else if (result.intent[0] != '\0') {
-                used += (size_t)snprintf(text + used, sizeof(text) - used, "Интент: %s", result.intent);
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "%s", s_tick_result.answer);
+            } else if (s_tick_result.task_title[0] != '\0') {
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "Задача: %s", s_tick_result.task_title);
+            } else if (s_tick_result.command[0] != '\0') {
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "Команда: %s", s_tick_result.command);
+            } else if (s_tick_result.intent[0] != '\0') {
+                used += (size_t)snprintf(text + used, sizeof(text) - used, "Интент: %s", s_tick_result.intent);
             }
             (void)used;
+            utf8_trim_tail(text);
             lv_label_set_text(s_answer, text);
         }
 
