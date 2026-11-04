@@ -37,6 +37,7 @@ bool kouki_speech_busy(void)
 #else
 
 #include "cJSON.h"
+#include "app_config.h"
 #include "app_voice.h"
 #include "esp_board_init.h"
 #include "esp_crt_bundle.h"
@@ -242,8 +243,11 @@ static esp_err_t speech_http_event(esp_http_client_event_t *evt)
  */
 static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf, size_t *out_len)
 {
-    char url[192];
-    snprintf(url, sizeof(url), "%s/api/speech", CONFIG_KOUKI_SERVER_URL);
+    const char *srv_url = kouki_config_get_srv_url();
+    const char *token = kouki_config_get_srv_token();
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/speech", srv_url);
 
     uint8_t *buf = heap_caps_malloc(SPEECH_BUF_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buf == NULL) {
@@ -272,9 +276,9 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf,
     }
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
-    if (strlen(CONFIG_KOUKI_SERVER_TOKEN) > 0) {
-        char auth[160];
-        snprintf(auth, sizeof(auth), "Bearer %s", CONFIG_KOUKI_SERVER_TOKEN);
+    if (token != NULL && strlen(token) > 0) {
+        char auth[300];
+        snprintf(auth, sizeof(auth), "Bearer %s", token);
         esp_http_client_set_header(client, "Authorization", auth);
     }
     esp_http_client_set_post_field(client, body, (int)body_len);

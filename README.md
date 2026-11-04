@@ -37,16 +37,24 @@ idf.py -p COM3 flash monitor
 powershell -File tools/build.ps1 -IdfTag 5.5.1
 ```
 
-## Настройки
+## Настройка и секреты (NVS)
 
-Все — в `menuconfig` → **Kouki Station**:
+Секреты больше не зашиваются в бинарный образ: Wi-Fi, токен сервера, URL и имя источника хранятся в NVS (namespace `kouki_config`).
+При первом включении станции (или после сброса) плата:
+1. Показывает на экране: `Не настроено. Wi-Fi: Kouki-Setup-XXXX, Откройте http://192.168.4.1`
+2. Поднимает открытую точку доступа `Kouki-Setup-XXXX` (XXXX — 2 байта MAC-адреса)
+3. Открывает веб-форму настройки на `http://192.168.4.1` (ввод SSID, пароля, URL и токена)
+4. Также доступна USB/Serial консоль (команды `show`, `set_wifi`, `set_token`, `set_url`, `save`, `reset`, `reboot`).
+
+Для сброса настроек: удерживайте кнопку BOOT (GPIO 0) ≥ 10 секунд при включении питания или введите `reset` в USB-консоли.
+
+## Настройки menuconfig
+
+Остальные параметры — в `menuconfig` → **Kouki Station**:
 
 | Параметр | По умолчанию | Что значит |
 | --- | --- | --- |
-| `KOUKI_WIFI_SSID` / `KOUKI_WIFI_PASSWORD` | пусто | домашняя сеть; вшивается в прошивку |
-| `KOUKI_SERVER_URL` | `http://192.168.1.49:5300` | адрес сервера Kouki |
-| `KOUKI_SERVER_TOKEN` | пусто | bearer-токен (`Kouki:Token` в `appsettings.json`) |
-| `KOUKI_SOURCE` | `station` | источник в записях журнала действий |
+| `KOUKI_WIFI_TIMEOUT_S` | 25 | сколько секунд ждать подключения к Wi-Fi (5–120) |
 | `KOUKI_MAX_RECORD_S` | 15 | сколько секунд пишем одну фразу |
 | `KOUKI_MIC_CHANNEL` | 1 | индекс канала микрофона в сыром потоке ES7210 |
 | `KOUKI_MIN_AMPLITUDE` | 120 | ниже этого уровня запись считается тишиной и не уходит на сервер |

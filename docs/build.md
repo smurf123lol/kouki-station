@@ -81,16 +81,15 @@ uv pip install --python <env>\Scripts\python.exe `
 Скрипты `tools/*.ps1` лежат в UTF-8 **с BOM**: Windows PowerShell 5.1 иначе читает
 кириллицу как ANSI и падает `ParserError` ещё до первой строки логики.
 
-## Секреты
+## Секреты и настройка (T46)
 
-`firmware/sdkconfig.secret` (в `.gitignore`):
+Секреты (Wi-Fi, токен сервера, URL и источник) больше не зашиваются в образ прошивки и живут в NVS (namespace `kouki_config`).
+При первом включении (или сбросе) станция поднимает точку доступа `Kouki-Setup-XXXX` (веб-форма на `http://192.168.4.1`)
+или настраивается через USB-консоль (команды `set_wifi`, `set_token`, `set_url`, `save`).
+
+Файл `firmware/sdkconfig.secret` (в `.gitignore`) остаётся только для локальных флагов сборки (например, включение wake-word):
 
 ```
-CONFIG_KOUKI_WIFI_SSID="..."
-CONFIG_KOUKI_WIFI_PASSWORD="..."
-CONFIG_KOUKI_SERVER_URL="http://<ip>:5300"
-CONFIG_KOUKI_SERVER_TOKEN="..."
-CONFIG_KOUKI_SOURCE="station"
 CONFIG_KOUKI_MAX_RECORD_S=15
 CONFIG_KOUKI_MIC_CHANNEL=1
 ```

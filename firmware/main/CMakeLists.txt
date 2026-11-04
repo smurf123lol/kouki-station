@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "./main.c"
+        "./app_config.c"
+        "./app_setup.c"
         "./app_wifi.c"
         "./app_voice.c"
         "./app_ui.c"
@@ -31,6 +33,7 @@ idf_component_register(
         driver
         esp_lcd
         esp_http_client
+        esp_http_server
         esp_wifi
         esp_event
         esp_netif

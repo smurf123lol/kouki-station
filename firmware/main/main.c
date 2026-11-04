@@ -6,6 +6,8 @@
  * ST77916) → LVGL. Аудио раньше экрана, потому что расширитель GPIO и тач
  * живут на I2C, который поднимает именно аудио-борда.
  */
+#include "app_config.h"
+#include "app_setup.h"
 #include "app_ui.h"
 #include "app_voice.h"
 #include "app_wifi.h"
@@ -29,7 +31,7 @@ static void wifi_task(void *arg)
     (void)arg;
 
     if (kouki_wifi_connect() == ESP_OK) {
-        ESP_LOGI(TAG, "сеть готова, сервер %s", CONFIG_KOUKI_SERVER_URL);
+        ESP_LOGI(TAG, "сеть готова, сервер %s", kouki_config_get_srv_url());
 #if CONFIG_KOUKI_DEBUG_MIC
     /* Диагностика входа: раз в 6 секунд печатаем уровни, чтобы можно было
      * поговорить в этот момент и увидеть, какой канал живой. */
@@ -117,6 +119,30 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    /* Ранняя проверка удержания кнопки BOOT (GPIO 0) для сброса настроек */
+    const gpio_config_t boot_cfg = {
+        .pin_bit_mask = 1ULL << GPIO_NUM_0,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&boot_cfg);
+    if (gpio_get_level(GPIO_NUM_0) == 0) {
+        ESP_LOGW(TAG, "кнопка BOOT нажата при старте, удерживайте 10 с для сброса…");
+        int hold_ms = 0;
+        while (gpio_get_level(GPIO_NUM_0) == 0 && hold_ms < 10000) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            hold_ms += 100;
+        }
+        if (hold_ms >= 10000) {
+            ESP_LOGW(TAG, "кнопка удерживалась 10 с: сброс настроек NVS!");
+            kouki_config_erase();
+        }
+    }
+
+    ESP_ERROR_CHECK(kouki_config_init());
+
     /*
      * Порядок строго как в заводском примере: сначала аудио-борда — она создаёт
      * I2C-шину (i2c_new_master_bus), без которой TCA9554PWR не может открыть
@@ -132,8 +158,16 @@ void app_main(void)
     ESP_ERROR_CHECK(kouki_voice_init(NULL, NULL));
     kouki_ui_init();
 
-    if (xTaskCreate(wifi_task, "kouki.wifi", 6144, NULL, 4, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "не удалось создать задачу Wi-Fi");
+    kouki_setup_console_init();
+
+    if (!kouki_config_is_complete()) {
+        ESP_LOGW(TAG, "конфигурация не настроена: переход в режим SoftAP настройки");
+        kouki_setup_start();
+    } else {
+        ESP_LOGI(TAG, "конфигурация готова, подключение к сети");
+        if (xTaskCreate(wifi_task, "kouki.wifi", 6144, NULL, 4, NULL) != pdPASS) {
+            ESP_LOGE(TAG, "не удалось создать задачу Wi-Fi");
+        }
     }
 
     ESP_LOGI(TAG, "станция готова: %d с записи на одну фразу", CONFIG_KOUKI_MAX_RECORD_S);

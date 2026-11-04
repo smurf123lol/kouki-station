@@ -2,54 +2,10 @@ menu "Kouki Station"
 
     menu "Wi-Fi"
 
-        config KOUKI_WIFI_SSID
-            string "SSID сети"
-            default "home"
-            help
-                Имя сети, к которой станция подключается при старте.
-                Пароль и адрес сервера — отдельными пунктами ниже.
-
-        config KOUKI_WIFI_PASSWORD
-            string "Пароль сети"
-            default ""
-
         config KOUKI_WIFI_TIMEOUT_S
             int "Сколько секунд ждать подключения"
             default 25
             range 5 120
-
-    endmenu
-
-    menu "Сервер Kouki"
-
-        config KOUKI_SERVER_URL
-            string "Адрес сервера (полный, включая схему и порт)"
-            default "http://192.168.1.49:5300"
-            help
-                Пример: http://192.168.1.49:5300 — станция обратится
-                к POST <адрес>/api/voice.
-
-                http годится только в своей сети: трафик не шифруется, и токен
-                видит любой, кто слушает Wi-Fi. Как только сервер выходит за пределы
-                дома или офиса — ставьте https: корневые сертификаты уже в образе,
-                подробности в kouki-station/docs/security.md.
-
-                Адрес, пароль Wi-Fi и токен попадают в образ прошивки: кто получил
-                плату, прочитает их из flash. Что с этим делать — security.md.
-        config KOUKI_SERVER_TOKEN
-            string "Bearer-токен"
-            default ""
-            help
-                Значение поля Kouki__Token на сервере. Пустая строка —
-                запрос уйдёт без заголовка Authorization (сервер ответит 401,
-                если токен у него задан).
-
-        config KOUKI_SOURCE
-            string "Метка источника"
-            default "station"
-            help
-                Попадает в ?source= и в поле source записи приёма.
-                По этой метке в tasks/actions видно, что фраза пришла со станции.
 
     endmenu
 

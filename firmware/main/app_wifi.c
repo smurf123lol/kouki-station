@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "app_config.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -60,20 +61,35 @@ esp_err_t kouki_wifi_connect(void)
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_wifi_event, NULL, NULL),
                         TAG, "регистрация IP_EVENT");
 
+    if (!kouki_config_is_complete()) {
+        ESP_LOGE(TAG, "конфигурация не готова: Wi-Fi не настроен");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const char *ssid = kouki_config_get_wifi_ssid();
+    const char *pass = kouki_config_get_wifi_pass();
+    if (ssid == NULL || strlen(ssid) == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     wifi_config_t cfg = {0};
-    strncpy((char *)cfg.sta.ssid, CONFIG_KOUKI_WIFI_SSID, sizeof(cfg.sta.ssid) - 1);
-    strncpy((char *)cfg.sta.password, CONFIG_KOUKI_WIFI_PASSWORD, sizeof(cfg.sta.password) - 1);
-    cfg.sta.threshold.authmode = strlen(CONFIG_KOUKI_WIFI_PASSWORD) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    strncpy((char *)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid) - 1);
+    if (pass != NULL && strlen(pass) > 0) {
+        strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password) - 1);
+        cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    }
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &cfg), TAG, "esp_wifi_set_config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
 
-    ESP_LOGI(TAG, "подключаюсь к «%s»", CONFIG_KOUKI_WIFI_SSID);
+    ESP_LOGI(TAG, "подключаюсь к Wi-Fi");
     const EventBits_t bits = xEventGroupWaitBits(s_events, CONNECTED_BIT | FAILED_BIT, pdFALSE, pdFALSE,
                                                  pdMS_TO_TICKS(CONFIG_KOUKI_WIFI_TIMEOUT_S * 1000));
     if ((bits & CONNECTED_BIT) == 0) {
-        ESP_LOGE(TAG, "сеть «%s» недоступна за %d с", CONFIG_KOUKI_WIFI_SSID, CONFIG_KOUKI_WIFI_TIMEOUT_S);
+        ESP_LOGE(TAG, "сеть недоступна за %d с", CONFIG_KOUKI_WIFI_TIMEOUT_S);
         return ESP_ERR_TIMEOUT;
     }
 
