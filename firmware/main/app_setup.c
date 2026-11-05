@@ -333,6 +333,7 @@ static void handle_console_command(const char *cmd)
                "  set_token <token>       — задать bearer-токен сервера (мин. 8 символов)\n"
                "  set_url <url>           — задать URL сервера (http:// или https://)\n"
                "  set_source <source>     — задать метку источника (по умолчанию 'station')\n"
+               "  set_silent <0|1>        — включить/выключить режим тишины (без голоса)\n"
                "  show                    — показать текущие настройки (секреты скрыты ***)\n"
                "  save                    — сохранить настройки в NVS\n"
                "  reset                   — очистить настройки в NVS\n"
@@ -396,6 +397,13 @@ static void handle_console_command(const char *cmd)
         } else {
             printf("Ошибка: источник слишком длинный\n");
         }
+    } else if (strncmp(cmd, "set_silent ", 11) == 0) {
+        const char *arg = cmd + 11;
+        while (*arg == ' ') arg++;
+        int val = atoi(arg);
+        kouki_config_set_silent(val != 0);
+        printf("OK (режим тишины: %s, выполните 'save' для сохранения в NVS)\n",
+               val != 0 ? "включен (без речи)" : "выключен (с речью)");
     } else if (strcmp(cmd, "save") == 0) {
         esp_err_t err = kouki_config_save();
         if (err == ESP_OK) {

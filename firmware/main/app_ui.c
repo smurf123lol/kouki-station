@@ -3,9 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app_speech.h"
 #include "app_voice.h"
 #include "app_wifi.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 
 /*
@@ -30,8 +33,6 @@ static const char *TAG = "kouki.ui";
 
 static lv_obj_t *s_button;
 static lv_obj_t *s_button_label;
-static lv_obj_t *s_ask_button;
-static lv_obj_t *s_ask_label;
 static lv_obj_t *s_status;
 static lv_obj_t *s_answer;
 
@@ -67,7 +68,7 @@ static void utf8_trim_tail(char *s)
     }
 }
 
-static kouki_session_t s_recording_session = KOUKI_SESSION_TASK;
+/* Сессия больше не разделяется на кнопки */
 static bool s_is_setup_mode = false;
 static char s_setup_text[128] = {0};
 static bool s_is_ota_mode = false;
@@ -85,9 +86,6 @@ void kouki_ui_show_setup(const char *ssid, const char *url)
     }
     if (s_button != NULL) {
         lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (s_ask_button != NULL) {
-        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -107,9 +105,6 @@ void kouki_ui_show_ota_progress(const char *text)
     if (s_button != NULL) {
         lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
     }
-    if (s_ask_button != NULL) {
-        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
-    }
 }
 
 void kouki_ui_clear_ota(void)
@@ -119,16 +114,13 @@ void kouki_ui_clear_ota(void)
     if (s_button != NULL) {
         lv_obj_clear_flag(s_button, LV_OBJ_FLAG_HIDDEN);
     }
-    if (s_ask_button != NULL) {
-        lv_obj_clear_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
-    }
     if (s_answer != NULL) {
         lv_label_set_text(s_answer, "");
     }
 }
 
-/* Начал/отправил: сессия выбирается кнопкой, а не угадывается по словам. */
-static void toggle_recording(kouki_session_t session)
+/* Начал/отправил: единая центральная кнопка. */
+static void toggle_recording(void)
 {
     if (s_is_setup_mode || s_is_ota_mode) {
         return;
@@ -140,33 +132,26 @@ static void toggle_recording(kouki_session_t session)
         return;
     }
 
-    if (kouki_voice_set_session(session) != ESP_OK) {
-        ESP_LOGW(TAG, "не удалось выбрать сессию — идёт отправка");
-        return;
+    if (kouki_speech_is_playing()) {
+        ESP_LOGI(TAG, "прерываю озвучивание перед новой записью");
+        kouki_speech_abort();
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    s_recording_session = session;
     const esp_err_t start_err = kouki_voice_start_recording();
     if (start_err == ESP_ERR_INVALID_STATE) {
-        /* Частая причина — станция ещё говорит; экран об этом молчал. */
-        ESP_LOGW(TAG, "запись не началась: станция занята (озвучивание или отправка)");
+        ESP_LOGW(TAG, "запись не началась: станция занята");
     } else if (start_err != ESP_OK) {
         ESP_LOGW(TAG, "запись не началась: %s", esp_err_to_name(start_err));
     } else {
-        ESP_LOGI(TAG, "начинаю запись: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
+        ESP_LOGI(TAG, "начинаю запись");
     }
 }
 
-static void on_task_clicked(lv_event_t *event)
+static void on_button_clicked(lv_event_t *event)
 {
     (void)event;
-    toggle_recording(KOUKI_SESSION_TASK);
-}
-
-static void on_ask_clicked(lv_event_t *event)
-{
-    (void)event;
-    toggle_recording(KOUKI_SESSION_ASK);
+    toggle_recording();
 }
 
 static void set_status(const char *text, uint32_t color)
@@ -207,37 +192,26 @@ static void ui_tick(lv_timer_t *timer)
         } else {
             set_status("Нет сети", COLOR_DANGER);
         }
-        lv_label_set_text(s_button_label, "Записать");
+        lv_label_set_text(s_button_label, "Слушать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
-        lv_obj_clear_state(s_ask_button, LV_STATE_DISABLED);
-        lv_label_set_text(s_ask_label, "Спросить");
         break;
 
     case KOUKI_VOICE_FOLLOWUP:
         set_status("Слушаю продолжение…", COLOR_WARN);
-        lv_label_set_text(s_button_label, "Записать");
+        lv_label_set_text(s_button_label, "Слушать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
-        lv_obj_clear_state(s_ask_button, LV_STATE_DISABLED);
-        lv_label_set_text(s_ask_label, "Спросить");
         break;
 
-    case KOUKI_VOICE_RECORDING: {
-        kouki_session_t session = kouki_voice_get_session();
-        set_status(session == KOUKI_SESSION_TASK ? "Слушаю… запишу задачей"
-                                                 : "Слушаю… разберу как вопрос",
-                   COLOR_WARN);
+    case KOUKI_VOICE_RECORDING:
+        set_status("Слушаю…", COLOR_WARN);
         lv_label_set_text(s_button_label, "Отправить");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_WARN), 0);
-        /* Сессию меняют до записи: во время записи второй кнопки нет. */
-        lv_obj_add_state(s_ask_button, LV_STATE_DISABLED);
         break;
-    }
 
     case KOUKI_VOICE_SENDING:
         set_status("Думаю…", COLOR_DIM);
         lv_label_set_text(s_button_label, "…");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_PAPER), 0);
-        lv_obj_add_state(s_ask_button, LV_STATE_DISABLED);
         break;
 
     case KOUKI_VOICE_DONE:
@@ -275,10 +249,8 @@ static void ui_tick(lv_timer_t *timer)
             lv_label_set_text(s_answer, text);
         }
 
-        lv_label_set_text(s_button_label, "Записать");
+        lv_label_set_text(s_button_label, "Слушать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
-        lv_obj_clear_state(s_ask_button, LV_STATE_DISABLED);
-        lv_label_set_text(s_ask_label, "Спросить");
         break;
     }
     }
@@ -304,38 +276,20 @@ void kouki_ui_init(void)
     set_status("Подключаюсь…", COLOR_DIM);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 54);
 
-    /* Главная кнопка — сессия «запись». */
+    /* Главная и единственная кнопка — крупный круг по центру. */
     s_button = lv_btn_create(scr);
-    lv_obj_set_size(s_button, 150, 150);
+    lv_obj_set_size(s_button, 160, 160);
     lv_obj_set_style_radius(s_button, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_shadow_width(s_button, 0, 0);
-    lv_obj_align(s_button, LV_ALIGN_CENTER, 0, -24);
-    lv_obj_add_event_cb(s_button, on_task_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_align(s_button, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_add_event_cb(s_button, on_button_clicked, LV_EVENT_CLICKED, NULL);
 
     s_button_label = lv_label_create(s_button);
-    lv_label_set_text(s_button_label, "Записать");
+    lv_label_set_text(s_button_label, "Слушать");
     lv_obj_set_style_text_color(s_button_label, lv_color_hex(COLOR_INK), 0);
     lv_obj_set_style_text_font(s_button_label, &font_ru_20, 0);
     lv_obj_center(s_button_label);
-
-    /* Вторая кнопка — сессия «вопрос»: та же запись, но без подсказки интента. */
-    s_ask_button = lv_btn_create(scr);
-    lv_obj_set_size(s_ask_button, 190, 44);
-    lv_obj_set_style_radius(s_ask_button, 22, 0);
-    lv_obj_set_style_bg_color(s_ask_button, lv_color_hex(COLOR_PAPER), 0);
-    lv_obj_set_style_bg_color(s_ask_button, lv_color_hex(COLOR_DIM), LV_STATE_DISABLED);
-    lv_obj_set_style_border_width(s_ask_button, 1, 0);
-    lv_obj_set_style_border_color(s_ask_button, lv_color_hex(COLOR_DIM), 0);
-    lv_obj_set_style_shadow_width(s_ask_button, 0, 0);
-    lv_obj_align(s_ask_button, LV_ALIGN_CENTER, 0, 74);
-    lv_obj_add_event_cb(s_ask_button, on_ask_clicked, LV_EVENT_CLICKED, NULL);
-
-    s_ask_label = lv_label_create(s_ask_button);
-    lv_label_set_text(s_ask_label, "Спросить");
-    lv_obj_set_style_text_color(s_ask_label, lv_color_hex(COLOR_SAND), 0);
-    lv_obj_set_style_text_font(s_ask_label, &font_ru_16, 0);
-    lv_obj_center(s_ask_label);
 
     s_answer = lv_label_create(scr);
     lv_label_set_long_mode(s_answer, LV_LABEL_LONG_WRAP);
@@ -344,7 +298,7 @@ void kouki_ui_init(void)
     lv_obj_set_style_text_align(s_answer, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_answer, lv_color_hex(COLOR_SAND), 0);
     lv_obj_set_style_text_font(s_answer, &font_ru_14, 0);
-    lv_obj_align(s_answer, LV_ALIGN_BOTTOM_MID, 0, -18);
+    lv_obj_align(s_answer, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     if (s_is_setup_mode) {
         set_status("Не настроено", COLOR_WARN);
@@ -352,7 +306,6 @@ void kouki_ui_init(void)
             lv_label_set_text(s_answer, s_setup_text);
         }
         lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
     }
 
     lv_timer_create(ui_tick, 250, NULL);

@@ -34,6 +34,15 @@ bool kouki_speech_busy(void)
     return false;
 }
 
+bool kouki_speech_is_playing(void)
+{
+    return false;
+}
+
+void kouki_speech_abort(void)
+{
+}
+
 #else
 
 #include "cJSON.h"
@@ -63,10 +72,22 @@ bool kouki_speech_busy(void)
 static int16_t s_tail[SPEECH_TAIL_FRAMES * 2u];
 
 static volatile bool s_busy;
+static volatile bool s_is_playing;
+static volatile bool s_abort_requested;
 
 bool kouki_speech_busy(void)
 {
     return s_busy;
+}
+
+bool kouki_speech_is_playing(void)
+{
+    return s_is_playing;
+}
+
+void kouki_speech_abort(void)
+{
+    s_abort_requested = true;
 }
 
 static uint16_t rd_le16(const uint8_t *p)
@@ -161,7 +182,7 @@ esp_err_t kouki_speech_stereo_expand(int16_t *samples, size_t frames)
 
 /* Тело запроса: только текст, без лишних полей — серверу больше ничего не нужно. */
 /* Сколько символов UTF-8 в строке (байты продолжения не считаем). */
-static size_t utf8_chars(const char *s)
+static size_t __attribute__((unused)) utf8_chars(const char *s)
 {
     size_t n = 0;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
@@ -173,7 +194,7 @@ static size_t utf8_chars(const char *s)
 }
 
 /* Копия не длиннее max_chars символов UTF-8: символ не разрезаем. */
-static char *utf8_prefix_copy(const char *s, size_t max_chars)
+static char * __attribute__((unused)) utf8_prefix_copy(const char *s, size_t max_chars)
 {
     const unsigned char *p = (const unsigned char *)s;
     const unsigned char *cut = p;
@@ -325,97 +346,188 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf,
     return ESP_OK;
 }
 
-esp_err_t kouki_speech_play(const char *text)
+static const char *get_next_phrase(const char *text, size_t *out_len, size_t max_chars)
 {
-    if (text == NULL || text[0] == '\0') {
-        return ESP_OK;       /* нечего озвучивать: это не ошибка */
+    if (text == NULL || *text == '\0') {
+        *out_len = 0;
+        return NULL;
     }
 
-    if (s_busy) {
-        ESP_LOGW(TAG, "предыдущее озвучивание ещё идёт — пропускаю");
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+        text++;
+    }
+    if (*text == '\0') {
+        *out_len = 0;
+        return NULL;
+    }
+
+    const char *p = text;
+    const char *last_sentence_end = NULL;
+    const char *last_clause_end = NULL;
+    const char *last_space = NULL;
+    size_t chars = 0;
+
+    while (*p != '\0') {
+        if ((*((const unsigned char *)p) & 0xC0) != 0x80) {
+            chars++;
+            if (chars > max_chars) {
+                break;
+            }
+        }
+
+        char c = *p;
+        if (c == '.' || c == '!' || c == '?' || c == '\n' || c == ';') {
+            bool is_num = (c == '.' && p > text && *(p - 1) >= '0' && *(p - 1) <= '9' && *(p + 1) >= '0' && *(p + 1) <= '9');
+            if (!is_num) {
+                last_sentence_end = p + 1;
+                if (chars >= 30) {
+                    break;
+                }
+            }
+        } else if (c == ',' || c == ':' || c == '-') {
+            last_clause_end = p + 1;
+        } else if (c == ' ') {
+            last_space = p;
+        }
+
+        p++;
+    }
+
+    const char *end = NULL;
+    if (last_sentence_end != NULL && (size_t)(last_sentence_end - text) > 0) {
+        end = last_sentence_end;
+    } else if (last_clause_end != NULL && (size_t)(last_clause_end - text) > 0 && chars >= max_chars * 2 / 3) {
+        end = last_clause_end;
+    } else if (last_space != NULL && (size_t)(last_space - text) > 0) {
+        end = last_space;
+    } else {
+        end = p;
+    }
+
+    *out_len = (size_t)(end - text);
+    return text;
+}
+
+static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len)
+{
+    if (s_abort_requested) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "озвучиваю ответ: %.40s%s", text, strlen(text) > 40 ? "…" : "");
+    kouki_voice_state_t voice_state = KOUKI_VOICE_IDLE;
+    kouki_voice_get_snapshot(&voice_state, NULL);
+    if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
+        ESP_LOGI(TAG, "во время воспроизведения началась запись/отправка — прерываю");
+        return ESP_ERR_INVALID_STATE;
+    }
 
-    /*
-     * Лимит — в символах (как MaxAnswerChars на сервере), а не байтах: иначе
-     * кириллица обрезается вдвое раньше, а порез посреди символа даёт 400.
-     */
-    const size_t chars = utf8_chars(text);
-    char *trimmed = utf8_prefix_copy(text, KOUKI_SPEECH_MAX_CHARS);
-    if (trimmed == NULL) {
+    char *phrase_str = malloc(phrase_len + 1);
+    if (phrase_str == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if (chars > KOUKI_SPEECH_MAX_CHARS) {
-        ESP_LOGW(TAG, "ответ длиннее %u символов — озвучу начало",
-                 (unsigned)KOUKI_SPEECH_MAX_CHARS);
-    }
+    memcpy(phrase_str, phrase, phrase_len);
+    phrase_str[phrase_len] = '\0';
 
-    char *body = build_body(trimmed);
-    free(trimmed);
-
+    char *body = build_body(phrase_str);
+    free(phrase_str);
     if (body == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
     uint8_t *wav = NULL;
     size_t wav_len = 0;
-    /* Во время сетевого запроса s_busy НЕ взводится: кнопка записи остаётся рабочей */
     const esp_err_t fetch_err = fetch_wav(body, strlen(body), &wav, &wav_len);
     cJSON_free(body);
 
-    esp_err_t err = fetch_err;
-    if (err == ESP_OK) {
-        /* Проверяем, не началась ли новая запись/отправка, пока шёл HTTP-запрос */
-        kouki_voice_state_t voice_state = KOUKI_VOICE_IDLE;
-        kouki_voice_get_snapshot(&voice_state, NULL);
-        if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
-            ESP_LOGI(TAG, "во время запроса речи началась запись/отправка — воспроизведение отменено");
-            free(wav);
-            return ESP_OK;
-        }
+    if (fetch_err != ESP_OK) {
+        ESP_LOGW(TAG, "запрос речи не удался: %s", esp_err_to_name(fetch_err));
+        return fetch_err;
+    }
 
-        kouki_speech_wav_t info;
-        err = kouki_speech_wav_parse(wav, wav_len, &info);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "сервер прислал не тот WAV (err=%s, %u байт)", esp_err_to_name(err),
-                     (unsigned)wav_len);
-        } else if (info.sample_rate != 16000) {
-            /* Кодек открыт на 16 кГц: другой частоте звук будет не тот. */
-            ESP_LOGW(TAG, "неожиданная частота WAV: %u Гц", (unsigned)info.sample_rate);
-            err = ESP_ERR_NOT_SUPPORTED;
-        } else {
-            int16_t *samples = (int16_t *)(wav + info.data_offset);
-            const size_t frames = info.data_bytes / (sizeof(int16_t) * info.channels);
+    if (s_abort_requested) {
+        free(wav);
+        return ESP_ERR_INVALID_STATE;
+    }
 
-            if (frames > 0 && info.channels == 1) {
-                err = kouki_speech_stereo_expand(samples, frames);
-            }
+    kouki_voice_get_snapshot(&voice_state, NULL);
+    if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
+        ESP_LOGI(TAG, "после загрузки речи началась запись — прерываю");
+        free(wav);
+        return ESP_ERR_INVALID_STATE;
+    }
 
-            if (err == ESP_OK && frames > 0) {
-                const size_t channels = info.channels == 1 ? 2u : (size_t)info.channels;
-                const int bytes = (int)(frames * channels * sizeof(int16_t));
+    kouki_speech_wav_t info;
+    esp_err_t err = kouki_speech_wav_parse(wav, wav_len, &info);
+    if (err != ESP_OK || info.sample_rate != 16000) {
+        ESP_LOGW(TAG, "неверный формат ответа WAV (err=%s, %u Гц)", esp_err_to_name(err), (unsigned)info.sample_rate);
+        free(wav);
+        return err != ESP_OK ? err : ESP_ERR_NOT_SUPPORTED;
+    }
 
-                ESP_LOGI(TAG, "озвучиваю %u кадров (%.1f с)", (unsigned)frames,
-                         (double)frames / 16000.0);
-                /* s_busy взводится только на время фактического вывода в кодек */
-                s_busy = true;
-                err = esp_audio_play(samples, bytes, portMAX_DELAY);
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "кодек не принял речь: %s", esp_err_to_name(err));
-                } else {
-                    /* Пауза после речи: закрывает хвост DMA и не даёт повтора. */
-                    esp_audio_play(s_tail, (int)sizeof(s_tail), portMAX_DELAY);
-                }
-                s_busy = false;
-            }
-        }
-    } else {
-        ESP_LOGW(TAG, "озвучивание не удалось: %s", esp_err_to_name(err));
+    int16_t *samples = (int16_t *)(wav + info.data_offset);
+    const size_t frames = info.data_bytes / (sizeof(int16_t) * info.channels);
+    if (frames > 0 && info.channels == 1) {
+        err = kouki_speech_stereo_expand(samples, frames);
+    }
+
+    if (err == ESP_OK && frames > 0 && !s_abort_requested) {
+        const size_t channels = info.channels == 1 ? 2u : (size_t)info.channels;
+        const int bytes = (int)(frames * channels * sizeof(int16_t));
+
+        s_busy = true;
+        err = esp_audio_play(samples, bytes, portMAX_DELAY);
+        s_busy = false;
     }
 
     free(wav);
+    return err;
+}
+
+esp_err_t kouki_speech_play(const char *text)
+{
+    if (text == NULL || text[0] == '\0') {
+        return ESP_OK;       /* нечего озвучивать: это не ошибка */
+    }
+
+    if (kouki_config_is_silent()) {
+        ESP_LOGI(TAG, "режим тишины включен: воспроизведение речи пропущено");
+        return ESP_OK;
+    }
+
+    if (s_busy || s_is_playing) {
+        ESP_LOGW(TAG, "предыдущее озвучивание ещё идёт — пропускаю");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_is_playing = true;
+    s_abort_requested = false;
+
+    ESP_LOGI(TAG, "озвучиваю ответ: %.50s%s", text, strlen(text) > 50 ? "…" : "");
+
+    const char *p = text;
+    esp_err_t err = ESP_OK;
+
+    while (*p != '\0' && !s_abort_requested) {
+        size_t phrase_len = 0;
+        const char *phrase_start = get_next_phrase(p, &phrase_len, 120);
+        if (phrase_start == NULL || phrase_len == 0) {
+            break;
+        }
+        p = phrase_start + phrase_len;
+
+        err = play_single_phrase(phrase_start, phrase_len);
+        if (err != ESP_OK) {
+            ESP_LOGI(TAG, "озвучивание прервано или завершилось (%s)", esp_err_to_name(err));
+            break;
+        }
+    }
+
+    if (!s_abort_requested && err == ESP_OK) {
+        /* Пауза после речи: закрывает хвост DMA и не даёт повтора */
+        esp_audio_play(s_tail, (int)sizeof(s_tail), portMAX_DELAY);
+    }
+
+    s_is_playing = false;
     return err;
 }
 #endif // CONFIG_KOUKI_SPEECH_ENABLED

@@ -44,6 +44,7 @@ typedef struct {
     char command[48];       /* имя исполненной команды */
     char answer[1024];      /* ответ ассистента (ask): до 480 символов, кириллицей до 960 байт */
     char error[160];        /* текст ошибки для показа */
+    bool requires_confirmation; /* действие требует подтверждения да/нет */
     int  http_status;       /* код ответа, 0 если запрос не дошёл */
     uint32_t duration_ms;   /* сколько длилась запись */
 } kouki_voice_result_t;

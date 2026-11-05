@@ -30,7 +30,14 @@ typedef struct {
     char dev_source[KOUKI_CONFIG_MAX_SOURCE_LEN + 1];
     char ca_pem[KOUKI_CONFIG_MAX_CA_PEM_LEN + 1];
     uint32_t ota_int_s;
+    bool     silent;
 } kouki_config_t;
+
+/* Включен ли режим тишины (без воспроизведения речи). */
+bool kouki_config_is_silent(void);
+
+/* Включает или выключает режим тишины. */
+void kouki_config_set_silent(bool silent);
 
 /**
  * Инициализирует модуль конфигурации: читает настройки из NVS.

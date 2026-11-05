@@ -436,15 +436,12 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
      * «Записать» -> intent=add_task (фраза становится задачей целиком),
      * «Спросить» -> intent=ask (фраза становится вопросом, ответ ляжет в задачу).
      */
-    if (s_session == KOUKI_SESSION_TASK) {
-        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
-                 srv_url, dev_source);
-    } else if (s_dialogue_continue) {
-        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask&dialogue=continue",
+    if (s_dialogue_continue) {
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s&dialogue=continue",
                  srv_url, dev_source);
         s_dialogue_continue = false;
     } else {
-        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask",
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s",
                  srv_url, dev_source);
     }
 
@@ -612,12 +609,16 @@ static void parse_response(const char *json, kouki_voice_result_t *out)
             copy_str(out->task_status, sizeof(out->task_status), json_string(task, "status"));
         }
 
-        /* Ответ ассистента (сессия «Спросить»): лежит в result.answer. */
+        /* Ответ ассистента (задача, вопрос, подтверждение): лежит в result.answer. */
         const cJSON *result = cJSON_GetObjectItemCaseSensitive(intake, "result");
         if (cJSON_IsObject(result)) {
             copy_str(out->answer, sizeof(out->answer), json_string(result, "answer"));
             if (out->task_title[0] == '\0') {
                 copy_str(out->task_title, sizeof(out->task_title), json_string(result, "question"));
+            }
+            const cJSON *req_conf = cJSON_GetObjectItemCaseSensitive(result, "requiresConfirmation");
+            if (cJSON_IsTrue(req_conf)) {
+                out->requires_confirmation = true;
             }
         }
 
@@ -694,15 +695,27 @@ static void send_task(void *arg)
         kouki_speech_play(result.answer);
 
         /*
-         * T73: окно продолжения диалога после озвучивания ответа.
-         * Открывается только при успешном ответе, подключённом Wi-Fi и KOUKI_FOLLOWUP_WINDOW_MS > 0.
+         * T88/T73: окно продолжения диалога после озвучивания ответа.
+         * Открывается для вопросов (ask) или при запросе подтверждения (requiresConfirmation).
+         * Для обычной задачи сразу переходим в IDLE (если не включен KOUKI_FOLLOWUP_TASK_ENABLED).
          */
-        if (kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
+        bool enable_followup = (strcmp(result.intent, "ask") == 0) ||
+                               result.requires_confirmation
+#if CONFIG_KOUKI_FOLLOWUP_TASK_ENABLED
+                               || true
+#endif
+                               ;
+
+        if (enable_followup && kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
             s_followup_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
             s_dialogue_continue = false;
             ESP_LOGI(TAG, "открываю окно продолжения диалога на %d мс", CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
             publish(KOUKI_VOICE_FOLLOWUP, &result);
+        } else {
+            publish(KOUKI_VOICE_IDLE, &result);
         }
+    } else if (result.error[0] == '\0') {
+        publish(KOUKI_VOICE_IDLE, &result);
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */

@@ -20,6 +20,11 @@ static void set_defaults(void)
     memset(&s_cfg, 0, sizeof(s_cfg));
     strncpy(s_cfg.dev_source, KOUKI_CONFIG_DEFAULT_SOURCE, sizeof(s_cfg.dev_source) - 1);
     s_cfg.ota_int_s = KOUKI_CONFIG_DEFAULT_OTA_INTERVAL;
+#if CONFIG_KOUKI_SILENT_MODE
+    s_cfg.silent = true;
+#else
+    s_cfg.silent = false;
+#endif
 }
 
 esp_err_t kouki_config_init(void)
@@ -75,6 +80,11 @@ esp_err_t kouki_config_init(void)
         s_cfg.ota_int_s = ota;
     } else {
         s_cfg.ota_int_s = KOUKI_CONFIG_DEFAULT_OTA_INTERVAL;
+    }
+
+    uint8_t silent_val = 0;
+    if (nvs_get_u8(handle, "silent", &silent_val) == ESP_OK) {
+        s_cfg.silent = (silent_val != 0);
     }
 
     nvs_close(handle);
@@ -287,6 +297,7 @@ esp_err_t kouki_config_save(void)
         nvs_erase_key(handle, "ca_pem");
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u32(handle, "ota_int_s", s_cfg.ota_int_s));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(handle, "silent", s_cfg.silent ? 1 : 0));
 
     err = nvs_commit(handle);
     nvs_close(handle);
@@ -313,6 +324,16 @@ esp_err_t kouki_config_erase(void)
     return ESP_OK;
 }
 
+bool kouki_config_is_silent(void)
+{
+    return s_cfg.silent;
+}
+
+void kouki_config_set_silent(bool silent)
+{
+    s_cfg.silent = silent;
+}
+
 void kouki_config_format_masked(char *buf, size_t max_len)
 {
     if (buf == NULL || max_len == 0) {
@@ -326,7 +347,8 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              "srv_token: %s\n"
              "dev_source: %s\n"
              "ca_pem: %s\n"
-             "ota_int_s: %u\n",
+             "ota_int_s: %u\n"
+             "silent: %s\n",
              (unsigned)s_cfg.cfg_ver,
              s_cfg.wifi_ssid[0] ? "***" : "(не задан)",
              s_cfg.wifi_pass[0] ? "***" : "(пустой)",
@@ -334,5 +356,6 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              s_cfg.srv_token[0] ? "***" : "(не задан)",
              s_cfg.dev_source[0] ? s_cfg.dev_source : KOUKI_CONFIG_DEFAULT_SOURCE,
              s_cfg.ca_pem[0] ? "(пользовательский NVS)" : "(вшитый Caddy CA)",
-             (unsigned)s_cfg.ota_int_s);
+             (unsigned)s_cfg.ota_int_s,
+             s_cfg.silent ? "включен (тишина)" : "выключен (с речью)");
 }
