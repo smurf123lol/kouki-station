@@ -213,15 +213,25 @@ static void ui_tick(lv_timer_t *timer)
         lv_label_set_text(s_ask_label, "Спросить");
         break;
 
-    case KOUKI_VOICE_RECORDING:
-        set_status(s_recording_session == KOUKI_SESSION_TASK ? "Слушаю… запишу задачей"
-                                                             : "Слушаю… разберу как вопрос",
+    case KOUKI_VOICE_FOLLOWUP:
+        set_status("Слушаю продолжение…", COLOR_WARN);
+        lv_label_set_text(s_button_label, "Записать");
+        lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_clear_state(s_ask_button, LV_STATE_DISABLED);
+        lv_label_set_text(s_ask_label, "Спросить");
+        break;
+
+    case KOUKI_VOICE_RECORDING: {
+        kouki_session_t session = kouki_voice_get_session();
+        set_status(session == KOUKI_SESSION_TASK ? "Слушаю… запишу задачей"
+                                                 : "Слушаю… разберу как вопрос",
                    COLOR_WARN);
         lv_label_set_text(s_button_label, "Отправить");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_WARN), 0);
         /* Сессию меняют до записи: во время записи второй кнопки нет. */
         lv_obj_add_state(s_ask_button, LV_STATE_DISABLED);
         break;
+    }
 
     case KOUKI_VOICE_SENDING:
         set_status("Думаю…", COLOR_DIM);

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Запись голоса и отправка на сервер Kouki.
  *
  * Станция ничего не распознаёт сама: она записывает WAV 16 кГц моно 16 бит
@@ -24,6 +24,7 @@ typedef enum {
     KOUKI_VOICE_SENDING,    /* отправили WAV, ждём ответ */
     KOUKI_VOICE_DONE,       /* сервер ответил, разбираем результат */
     KOUKI_VOICE_ERROR,      /* сеть, токен или сервер ответили ошибкой */
+    KOUKI_VOICE_FOLLOWUP,   /* окно ожидания продолжения диалога */
 } kouki_voice_state_t;
 
 /* Сессия: что означает запись. Кнопка, а не догадка по словам. */
@@ -59,6 +60,9 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx);
  * (intent не передаётся, фразу разбирает классификатор на сервере).
  */
 esp_err_t kouki_voice_set_session(kouki_session_t session);
+
+/* Возвращает текущую сессию записи (KOUKI_SESSION_TASK или KOUKI_SESSION_ASK). */
+kouki_session_t kouki_voice_get_session(void);
 
 /* Начать запись. Повторный вызов во время записи ничего не меняет. */
 esp_err_t kouki_voice_start_recording(void);
