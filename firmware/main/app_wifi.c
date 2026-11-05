@@ -85,8 +85,8 @@ esp_err_t kouki_wifi_connect(void)
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &cfg), TAG, "esp_wifi_set_config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
 
-    /* T95: определяем обрыв AP за ≤2 с вместо стандартных 6 с */
-    esp_err_t inactive_err = esp_wifi_set_inactive_time(WIFI_IF_STA, 2);
+    /* T95: определяем обрыв AP за 3 с (минимум в IDF для STA) вместо стандартных 6 с */
+    esp_err_t inactive_err = esp_wifi_set_inactive_time(WIFI_IF_STA, 3);
     if (inactive_err != ESP_OK) {
         ESP_LOGW(TAG, "не удалось установить inactive_time: %s", esp_err_to_name(inactive_err));
     }
