@@ -6,6 +6,7 @@
 
 #include "app_config.h"
 #include "app_http.h"
+#include "app_ota.h"
 #include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
@@ -392,6 +393,9 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
     if (err == ESP_OK) {
         err = esp_http_client_fetch_headers(client);
         status = esp_http_client_get_status_code(client);
+        if (status > 0) {
+            kouki_ota_mark_server_communicated();
+        }
     }
 
     size_t total = 0;
@@ -678,6 +682,11 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
         /*
          * Станция ещё говорит. Начать запись сейчас — значит записать
          * собственную речь вместо человека, поэтому отказываем.
+         */
+        err = ESP_ERR_INVALID_STATE;
+    } else if (kouki_ota_is_updating()) {
+        /*
+         * Идёт загрузка или прошивка обновления: запись голоса заблокирована.
          */
         err = ESP_ERR_INVALID_STATE;
     } else {

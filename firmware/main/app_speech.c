@@ -39,6 +39,7 @@ bool kouki_speech_busy(void)
 #include "cJSON.h"
 #include "app_config.h"
 #include "app_http.h"
+#include "app_ota.h"
 #include "app_voice.h"
 #include "esp_board_init.h"
 #include "esp_crt_bundle.h"
@@ -288,6 +289,9 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint8_t **out_buf,
 
     err = esp_http_client_perform(client);
     const int status = esp_http_client_get_status_code(client);
+    if (status > 0) {
+        kouki_ota_mark_server_communicated();
+    }
 
     if (err != ESP_OK) {
         char diag[128] = {0};

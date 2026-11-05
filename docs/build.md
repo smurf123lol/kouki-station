@@ -119,7 +119,7 @@ CONFIG_KOUKI_MIC_CHANNEL=1
 firmware/build/kouki_station.bin
 ```
 
-Прошивка: `tools/flash-windows.ps1 -Port COM3` (bootloader `0x0`, partitions `0x8000`, приложение `0x10000`).
+Прошивка: `tools/flash-windows.ps1 -Port COM3` (bootloader `0x0`, partitions `0x8000`, приложение `0x20000 [ota_0], otadata 0xf000`).
 
 ### Дерево задачи на сервере
 
@@ -160,7 +160,7 @@ CONFIG_SR_WN_WN10_HIESP=y
 `
 
 затем удалить firmware/sdkconfig, собрать и прошить вместе с srmodels.bin
-(`tools/flash-windows.ps1` сам пишет его на 0x410000, если файл больше 1 КБ —
+(`tools/flash-windows.ps1` сам пишет его на 0x820000, если файл больше 1 КБ —
 пустая заглушка от упаковщика теперь не прошивается).
 
 ## Тестовый режим
@@ -176,7 +176,7 @@ KOUKI_TEST_MODE (+ KOUKI_TEST_MODE_DELAY_S, KOUKI_TEST_MODE_SECONDS,
 Модель кодового слова — не файл в приложении, а содержимое flash-партиции
 `model` (`partitions.csv`, 2 МБ). `esp_srmodel_init("model")` мапит раздел,
 поэтому одной `idf.py flash` мало: рядом с `kouki_station.bin` нужен
-`build/srmodels/srmodels.bin` на адрес раздела (`0x410000`). `tools/flash-windows.ps1`
+`build/srmodels/srmodels.bin` на адрес раздела (`0x820000`). `tools/flash-windows.ps1`
 пишет оба файла сам; если `srmodels.bin` не собрался — предупредит и прошьёт без
 моделей (станция поднимется, но кодовое слово будет недоступно).
 

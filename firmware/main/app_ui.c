@@ -70,6 +70,8 @@ static void utf8_trim_tail(char *s)
 static kouki_session_t s_recording_session = KOUKI_SESSION_TASK;
 static bool s_is_setup_mode = false;
 static char s_setup_text[128] = {0};
+static bool s_is_ota_mode = false;
+static char s_ota_text[128] = {0};
 
 void kouki_ui_show_setup(const char *ssid, const char *url)
 {
@@ -89,10 +91,46 @@ void kouki_ui_show_setup(const char *ssid, const char *url)
     }
 }
 
+void kouki_ui_show_ota_progress(const char *text)
+{
+    s_is_ota_mode = true;
+    if (text != NULL) {
+        strncpy(s_ota_text, text, sizeof(s_ota_text) - 1);
+        s_ota_text[sizeof(s_ota_text) - 1] = '\0';
+    }
+    if (s_status != NULL) {
+        set_status("Обновление…", COLOR_WARN);
+    }
+    if (s_answer != NULL) {
+        lv_label_set_text(s_answer, s_ota_text);
+    }
+    if (s_button != NULL) {
+        lv_obj_add_flag(s_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ask_button != NULL) {
+        lv_obj_add_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void kouki_ui_clear_ota(void)
+{
+    s_is_ota_mode = false;
+    s_ota_text[0] = '\0';
+    if (s_button != NULL) {
+        lv_obj_clear_flag(s_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ask_button != NULL) {
+        lv_obj_clear_flag(s_ask_button, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_answer != NULL) {
+        lv_label_set_text(s_answer, "");
+    }
+}
+
 /* Начал/отправил: сессия выбирается кнопкой, а не угадывается по словам. */
 static void toggle_recording(kouki_session_t session)
 {
-    if (s_is_setup_mode) {
+    if (s_is_setup_mode || s_is_ota_mode) {
         return;
     }
 
@@ -146,6 +184,14 @@ static void ui_tick(lv_timer_t *timer)
         set_status("Не настроено", COLOR_WARN);
         if (s_setup_text[0] != '\0') {
             lv_label_set_text(s_answer, s_setup_text);
+        }
+        return;
+    }
+
+    if (s_is_ota_mode) {
+        set_status("Обновление…", COLOR_WARN);
+        if (s_ota_text[0] != '\0') {
+            lv_label_set_text(s_answer, s_ota_text);
         }
         return;
     }
