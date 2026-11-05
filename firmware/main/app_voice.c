@@ -10,6 +10,7 @@
 #include "app_speech.h"
 #include "app_tone.h"
 #include "app_wake.h"
+#include "app_wifi.h"
 #include "cJSON.h"
 #include "esp_board_init.h"
 #include "esp_check.h"
@@ -547,6 +548,14 @@ static void send_task(void *arg)
     const uint32_t frames = (uint32_t)(s_sample_bytes / BYTES_PER_SAMPLE);
     result.duration_ms = (uint32_t)((uint64_t)frames * 1000 / SAMPLE_RATE);
 
+    /* T95: быстрый отказ при обрыве сети во время записи — не ждём 30 с таймаут HTTP */
+    if (!kouki_wifi_is_connected()) {
+        copy_str(result.error, sizeof(result.error), "Нет сети");
+        publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelete(NULL);
+        return;
+    }
+
     /*
      * Сервер отдаёт литеральный UTF-8 (без \uXXXX) и дублирует фразу на вопрос и ответ:
      * живой замер — 4 825 Б на 401/421 символ, худший штатный случай ~5,9 КБ.
@@ -661,6 +670,14 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
 
     if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
+    }
+
+    /* T95: гейт сети — без Wi-Fi запись не начинается (кнопка и wake), играется тон ошибки */
+    if (!kouki_wifi_is_connected()) {
+        xSemaphoreGive(s_lock);
+        kouki_tone_play(KOUKI_TONE_ERROR);
+        ESP_LOGW(TAG, "запись не начата: нет подключения к Wi-Fi");
+        return ESP_ERR_INVALID_STATE;
     }
 
     esp_err_t err = ESP_OK;

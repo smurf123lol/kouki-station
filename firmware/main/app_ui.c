@@ -202,7 +202,11 @@ static void ui_tick(lv_timer_t *timer)
 
     switch (state) {
     case KOUKI_VOICE_IDLE:
-        set_status(kouki_wifi_is_connected() ? "Нажмите и говорите" : "Нет сети", COLOR_DIM);
+        if (kouki_wifi_is_connected()) {
+            set_status("Нажмите и говорите", COLOR_DIM);
+        } else {
+            set_status("Нет сети", COLOR_DANGER);
+        }
         lv_label_set_text(s_button_label, "Записать");
         lv_obj_set_style_bg_color(s_button, lv_color_hex(COLOR_ACCENT), 0);
         lv_obj_clear_state(s_ask_button, LV_STATE_DISABLED);
