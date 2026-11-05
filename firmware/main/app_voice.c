@@ -94,15 +94,10 @@ static void wav_write_header(uint8_t *buf, uint32_t sample_bytes)
 
 static void publish(kouki_voice_state_t state, const kouki_voice_result_t *result)
 {
-    kouki_voice_result_t copy = {0};
-    if (result) {
-        copy = *result;
-    }
-
     if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
         s_state = state;
         if (result) {
-            s_result = copy;
+            s_result = *result;
         }
         xSemaphoreGive(s_lock);
     }
@@ -118,7 +113,7 @@ static void publish(kouki_voice_state_t state, const kouki_voice_result_t *resul
     }
 
     if (s_cb) {
-        s_cb(state, result ? &copy : NULL, s_cb_ctx);
+        s_cb(state, result, s_cb_ctx);
     }
 }
 
@@ -381,7 +376,8 @@ static void record_task(void *arg)
  */
 static void finish_recording(void)
 {
-    kouki_voice_result_t result = {0};
+    static kouki_voice_result_t result;
+    memset(&result, 0, sizeof(result));
 
     if (!s_lock || xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
         return;
@@ -637,7 +633,8 @@ static void parse_response(const char *json, kouki_voice_result_t *out)
 static void send_task(void *arg)
 {
     (void)arg;
-    kouki_voice_result_t result = {0};
+    static kouki_voice_result_t result;
+    memset(&result, 0, sizeof(result));
 
     const uint32_t frames = (uint32_t)(s_sample_bytes / BYTES_PER_SAMPLE);
     result.duration_ms = (uint32_t)((uint64_t)frames * 1000 / SAMPLE_RATE);
@@ -732,7 +729,7 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreatePinnedToCore(record_task, "kouki.record", 4096, NULL, 5, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(record_task, "kouki.record", 8192, NULL, 5, NULL, 1) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
 
