@@ -197,6 +197,29 @@ void kouki_voice_debug_levels(void)
     }
 }
 
+/* Момент, когда закончится автозапись после кодового слова; 0 — обычная запись. */
+static TickType_t s_wake_stop_tick;
+
+/* T73: окно продолжения диалога */
+static TickType_t s_followup_until_tick;
+static bool s_dialogue_continue;
+static int s_followup_silence_chunks;
+
+static bool is_chunk_loud(const int16_t *pcm, size_t samples, uint32_t threshold)
+{
+    if (samples == 0) {
+        return false;
+    }
+    uint64_t sum = 0;
+    size_t checked = 0;
+    for (size_t i = 0; i < samples; i += 4) {
+        int32_t value = pcm[i];
+        sum += (uint64_t)(value < 0 ? -value : value);
+        checked++;
+    }
+    return checked ? ((sum / checked) >= threshold) : false;
+}
+
 static esp_err_t record_chunk(void)
 {
     static int16_t mono[RECORD_CHUNK];
@@ -209,11 +232,21 @@ static esp_err_t record_chunk(void)
     memcpy(s_buf + WAV_HEADER_SIZE + s_sample_bytes, mono, bytes);
     s_sample_bytes += bytes;
 
+    if (s_dialogue_continue) {
+        if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+            s_followup_silence_chunks = 0;
+        } else {
+            s_followup_silence_chunks++;
+            uint32_t silence_ms = (uint32_t)(s_followup_silence_chunks * ((uint64_t)RECORD_CHUNK * 1000 / SAMPLE_RATE));
+            if (silence_ms >= CONFIG_KOUKI_FOLLOWUP_SILENCE_MS) {
+                ESP_LOGI(TAG, "тишина в продолжении (%u мс) — завершаю запись", (unsigned)silence_ms);
+                s_stop_requested = true;
+            }
+        }
+    }
+
     return ESP_OK;
 }
-
-/* Момент, когда закончится автозапись после кодового слова; 0 — обычная запись. */
-static TickType_t s_wake_stop_tick;
 
 static bool IsLoudEnough(void);
 static void finish_recording(void);
@@ -232,6 +265,44 @@ static bool IsRecording(void)
     }
 
     return recording;
+}
+
+/*
+ * Шаг ожидания продолжения диалога: микрофон слушает речь без wake-слова и кнопки.
+ */
+static void followup_step(void)
+{
+    if (xTaskGetTickCount() >= s_followup_until_tick) {
+        ESP_LOGI(TAG, "окно продолжения истекло: возврат в IDLE");
+        publish(KOUKI_VOICE_IDLE, NULL);
+        return;
+    }
+
+    if (!kouki_wifi_is_connected()) {
+        ESP_LOGW(TAG, "в окне продолжения потерян Wi-Fi: закрываю окно");
+        publish(KOUKI_VOICE_IDLE, NULL);
+        kouki_tone_play(KOUKI_TONE_ERROR);
+        return;
+    }
+
+    static int16_t mono[RECORD_CHUNK];
+    if (read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+
+    if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+        ESP_LOGI(TAG, "в окне продолжения услышали речь: начинаю запись продолжения");
+        s_session = KOUKI_SESSION_ASK;
+        s_dialogue_continue = true;
+        s_followup_silence_chunks = 0;
+        esp_err_t err = start_recording_internal(KOUKI_TONE_START);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "не удалось начать запись продолжения: %s", esp_err_to_name(err));
+            publish(KOUKI_VOICE_IDLE, NULL);
+            kouki_tone_play(KOUKI_TONE_ERROR);
+        }
+    }
 }
 
 /*
@@ -269,7 +340,18 @@ static void record_task(void *arg)
 {
     (void)arg;
     while (true) {
-        if (!IsRecording()) {
+        kouki_voice_state_t cur_state = KOUKI_VOICE_IDLE;
+        if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+            cur_state = s_state;
+            xSemaphoreGive(s_lock);
+        }
+
+        if (cur_state == KOUKI_VOICE_FOLLOWUP) {
+            followup_step();
+            continue;
+        }
+
+        if (cur_state != KOUKI_VOICE_RECORDING) {
             idle_step();
             continue;
         }
@@ -283,6 +365,12 @@ static void record_task(void *arg)
         if (record_chunk() != ESP_OK) {
             /* Кончилось место в буфере — закрываем запись так же, как по кнопке. */
             finish_recording();
+            continue;
+        }
+
+        if (s_dialogue_continue && s_stop_requested) {
+            finish_recording();
+            continue;
         }
     }
 }
@@ -307,6 +395,7 @@ static void finish_recording(void)
     result.duration_ms = (uint32_t)((uint64_t)(bytes / BYTES_PER_SAMPLE) * 1000 / SAMPLE_RATE);
 
     if (bytes == 0) {
+        s_dialogue_continue = false;
         copy_str(result.error, sizeof(result.error), "Тишина: ничего не записалось");
         publish(KOUKI_VOICE_ERROR, &result);
         return;
@@ -315,6 +404,7 @@ static void finish_recording(void)
     wav_write_header(s_buf, (uint32_t)bytes);
 
     if (!IsLoudEnough()) {
+        s_dialogue_continue = false;
         copy_str(result.error, sizeof(result.error), "Тишина: слишком тихо, повторите ближе к микрофону");
         publish(KOUKI_VOICE_ERROR, &result);
         return;
@@ -353,6 +443,10 @@ static esp_err_t http_post_wav(const uint8_t *wav, size_t wav_len, char *respons
     if (s_session == KOUKI_SESSION_TASK) {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=add_task",
                  srv_url, dev_source);
+    } else if (s_dialogue_continue) {
+        snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask&dialogue=continue",
+                 srv_url, dev_source);
+        s_dialogue_continue = false;
     } else {
         snprintf(url, sizeof(url), "%s/api/voice?source=%s&intent=ask",
                  srv_url, dev_source);
@@ -601,6 +695,17 @@ static void send_task(void *arg)
      */
     if (result.error[0] == '\0' && result.answer[0] != '\0') {
         kouki_speech_play(result.answer);
+
+        /*
+         * T73: окно продолжения диалога после озвучивания ответа.
+         * Открывается только при успешном ответе, подключённом Wi-Fi и KOUKI_FOLLOWUP_WINDOW_MS > 0.
+         */
+        if (kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
+            s_followup_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
+            s_dialogue_continue = false;
+            ESP_LOGI(TAG, "открываю окно продолжения диалога на %d мс", CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
+            publish(KOUKI_VOICE_FOLLOWUP, &result);
+        }
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
@@ -651,8 +756,14 @@ esp_err_t kouki_voice_set_session(kouki_session_t session)
     }
 
     s_session = session;
+    s_dialogue_continue = false;
     ESP_LOGI(TAG, "сессия: %s", session == KOUKI_SESSION_TASK ? "запись" : "вопрос");
     return ESP_OK;
+}
+
+kouki_session_t kouki_voice_get_session(void)
+{
+    return s_session;
 }
 
 /*
@@ -743,6 +854,7 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
 
 esp_err_t kouki_voice_start_recording(void)
 {
+    s_dialogue_continue = false;
     return start_recording_internal(KOUKI_TONE_START);
 }
 
