@@ -20,6 +20,12 @@ void kouki_ui_init(void);
 /* Показывает экран первичной настройки (AP-режим). */
 void kouki_ui_show_setup(const char *ssid, const char *url);
 
+/* Показывает экран процесса OTA обновления прошивки */
+void kouki_ui_show_ota_progress(const char *text);
+
+/* Сбрасывает экран OTA обновления (если произошла ошибка) */
+void kouki_ui_clear_ota(void);
+
 #ifdef __cplusplus
 }
 #endif

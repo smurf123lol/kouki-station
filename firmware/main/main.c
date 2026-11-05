@@ -7,6 +7,7 @@
  * живут на I2C, который поднимает именно аудио-борда.
  */
 #include "app_config.h"
+#include "app_ota.h"
 #include "app_setup.h"
 #include "app_ui.h"
 #include "app_voice.h"
@@ -32,6 +33,7 @@ static void wifi_task(void *arg)
 
     if (kouki_wifi_connect() == ESP_OK) {
         ESP_LOGI(TAG, "сеть готова, сервер %s", kouki_config_get_srv_url());
+        kouki_ota_start();
 #if CONFIG_KOUKI_DEBUG_MIC
     /* Диагностика входа: раз в 6 секунд печатаем уровни, чтобы можно было
      * поговорить в этот момент и увидеть, какой канал живой. */
@@ -159,6 +161,7 @@ void app_main(void)
     kouki_ui_init();
 
     kouki_setup_console_init();
+    ESP_ERROR_CHECK(kouki_ota_init());
 
     if (!kouki_config_is_complete()) {
         ESP_LOGW(TAG, "конфигурация не настроена: переход в режим SoftAP настройки");

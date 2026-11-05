@@ -41,3 +41,6 @@ CONFIG_MODEL_IN_FLASH=y
 
 # Корневые сертификаты для https: своего CA не заводим, берём встроенный набор.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# OTA и автоматический откат прошивки (T16)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

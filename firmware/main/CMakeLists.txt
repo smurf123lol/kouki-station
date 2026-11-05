@@ -10,6 +10,7 @@ idf_component_register(
         "./app_wake.c"
         "./app_tone.c"
         "./app_speech.c"
+        "./app_ota.c"
         # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md
         "./drivers/exio/TCA9554PWR.c"
         "./drivers/lcd/esp_lcd_st77916/esp_lcd_st77916.c"
@@ -31,6 +32,8 @@ idf_component_register(
         "./drivers/lvgl"
         "./ui"
     REQUIRES
+        app_update
+        esp_https_ota
         driver
         esp_lcd
         esp_http_client
