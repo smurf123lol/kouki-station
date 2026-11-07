@@ -530,6 +530,8 @@ esp_err_t kouki_speech_play(const char *text)
     }
 
     s_is_playing = false;
+    /* Кулдаун 1500 мс после речи для рассеивания реверберации комнаты */
+    kouki_wake_mute(1500);
     return err;
 }
 #endif // CONFIG_KOUKI_SPEECH_ENABLED

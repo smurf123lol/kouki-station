@@ -305,8 +305,8 @@ void kouki_tone_play(kouki_tone_t tone)
         ESP_LOGE(TAG, "кодек не принял сигнал: %s", esp_err_to_name(play_err));
     }
 
-    /* После любого звукового сигнала подавляем детектор на 800 мс для защиты от эха */
-    kouki_wake_mute(800);
+    /* После любого звукового сигнала подавляем детектор на 1000 мс для защиты от эха */
+    kouki_wake_mute(1000);
 }
 
 #endif // CONFIG_KOUKI_SOUND_SIGNALS

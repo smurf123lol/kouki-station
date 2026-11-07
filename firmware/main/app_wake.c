@@ -265,7 +265,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
 
                 if (prob >= threshold) {
                     s_consecutive_hits++;
-                    if (s_consecutive_hits >= 2) {
+                    if (s_consecutive_hits >= 3) {
                         ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
                                  (double)prob, (double)threshold);
                         detected = true;

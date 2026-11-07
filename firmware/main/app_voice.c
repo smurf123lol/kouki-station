@@ -245,7 +245,12 @@ static esp_err_t record_chunk(void)
     }
 
     if (s_wake_recording) {
-        if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+        /* Игнорируем первые 320 мс (5 чанков), чтобы хвост стартового тона не детектировался как речь */
+        const size_t min_speech_start_bytes = 5 * RECORD_CHUNK * BYTES_PER_SAMPLE;
+        /* Порог речи для VAD с запасом над комнатным шумом (~120) */
+        const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE * 3) / 2;
+
+        if (s_sample_bytes >= min_speech_start_bytes && is_chunk_loud(mono, RECORD_CHUNK, speech_chunk_th)) {
             if (!s_wake_speech_detected) {
                 ESP_LOGI(TAG, "wake-сессия: обнаружена речь, отслеживаю окончание фразы");
                 s_wake_speech_detected = true;
@@ -386,27 +391,37 @@ static void record_task(void *arg)
             continue;
         }
 
-        if (cur_state != KOUKI_VOICE_RECORDING) {
+        if (cur_state == KOUKI_VOICE_RECORDING) {
+            /* Остановку просит кнопка или истёкший таймер кодового слова. */
+            if (s_stop_requested || (s_wake_stop_tick != 0 && xTaskGetTickCount() >= s_wake_stop_tick)) {
+                finish_recording();
+                continue;
+            }
+
+            if (record_chunk() != ESP_OK) {
+                /* Кончилось место в буфере — закрываем запись так же, как по кнопке. */
+                finish_recording();
+                continue;
+            }
+
+            if (s_dialogue_continue && s_stop_requested) {
+                finish_recording();
+                continue;
+            }
+            continue;
+        }
+
+        /*
+         * Микрофон слушает wake-word ТОЛЬКО когда станция полностью в покое:
+         * не отправляет HTTP, не говорит через динамик и не начинает старт.
+         */
+        if (cur_state == KOUKI_VOICE_IDLE && !kouki_speech_is_playing() && !kouki_speech_busy() && !s_starting) {
             idle_step();
             continue;
         }
 
-        /* Остановку просит кнопка или истёкший таймер кодового слова. */
-        if (s_stop_requested || (s_wake_stop_tick != 0 && xTaskGetTickCount() >= s_wake_stop_tick)) {
-            finish_recording();
-            continue;
-        }
-
-        if (record_chunk() != ESP_OK) {
-            /* Кончилось место в буфере — закрываем запись так же, как по кнопке. */
-            finish_recording();
-            continue;
-        }
-
-        if (s_dialogue_continue && s_stop_requested) {
-            finish_recording();
-            continue;
-        }
+        /* Во всех промежуточных состояниях (SENDING, DONE, воспроизведение речи) уступаем CPU */
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
 
