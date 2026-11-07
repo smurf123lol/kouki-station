@@ -107,6 +107,8 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<div class=\"field\"><label>Bearer-токен</label><input type=\"password\" name=\"srv_token\" minlength=\"8\" maxlength=\"256\" required placeholder=\"мин. 8 символов\"></div>"
         "<div class=\"field\"><label>Метка источника</label><input type=\"text\" name=\"dev_source\" maxlength=\"32\" value=\"station\"></div>"
         "<div class=\"field\"><label>Сертификат CA (PEM, необязательно)</label><textarea name=\"ca_pem\" rows=\"4\" placeholder=\"-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE----- (пусто — вшитый CA)\"></textarea><div class=\"hint\">Оставьте пустым для вшитого kouki.local CA</div></div>"
+        "<div class=\"field\"><label><input type=\"checkbox\" name=\"wake_en\" value=\"1\" style=\"width:auto;display:inline-block;vertical-align:middle;margin-right:8px;\" checked>Wake-word «эй гин»</label></div>"
+        "<div class=\"field\"><label>Порог wake-word (10–95)</label><input type=\"number\" name=\"wake_th\" min=\"10\" max=\"95\" value=\"60\"><div class=\"hint\">По умолчанию 60</div></div>"
         "<button type=\"submit\">Сохранить</button>"
         "</form></div></body></html>";
 
@@ -142,6 +144,8 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     char token[300] = {0};
     char src[64] = {0};
     char ca_pem[KOUKI_CONFIG_MAX_CA_PEM_LEN + 1] = {0};
+    char wake_en_str[16] = {0};
+    char wake_th_str[16] = {0};
 
     get_form_param(buf, "wifi_ssid", ssid, sizeof(ssid));
     get_form_param(buf, "wifi_pass", pass, sizeof(pass));
@@ -149,6 +153,8 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     get_form_param(buf, "srv_token", token, sizeof(token));
     get_form_param(buf, "dev_source", src, sizeof(src));
     get_form_param(buf, "ca_pem", ca_pem, sizeof(ca_pem));
+    bool has_wake_en = get_form_param(buf, "wake_en", wake_en_str, sizeof(wake_en_str));
+    bool has_wake_th = get_form_param(buf, "wake_th", wake_th_str, sizeof(wake_th_str));
 
     if (strlen(ssid) == 0) {
         httpd_resp_set_status(req, "400 Bad Request");
@@ -222,6 +228,13 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     kouki_config_set_token(token);
     kouki_config_set_source(src[0] ? src : KOUKI_CONFIG_DEFAULT_SOURCE);
     kouki_config_set_ca_pem(p_pem);
+    kouki_config_set_wake_enabled(has_wake_en && (strcmp(wake_en_str, "1") == 0 || strcmp(wake_en_str, "on") == 0));
+    if (has_wake_th && wake_th_str[0] != '\0') {
+        int th = atoi(wake_th_str);
+        if (th >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD && th <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD) {
+            kouki_config_set_wake_threshold((uint8_t)th);
+        }
+    }
 
     free(buf);
 
@@ -334,6 +347,8 @@ static void handle_console_command(const char *cmd)
                "  set_url <url>           — задать URL сервера (http:// или https://)\n"
                "  set_source <source>     — задать метку источника (по умолчанию 'station')\n"
                "  set_silent <0|1>        — включить/выключить режим тишины (без голоса)\n"
+               "  set_wake <0|1>          — включить/выключить wake-word «эй гин»\n"
+               "  set_wake_th <10..95>    — порог срабатывания wake-word (по умолч. 60)\n"
                "  show                    — показать текущие настройки (секреты скрыты ***)\n"
                "  save                    — сохранить настройки в NVS\n"
                "  reset                   — очистить настройки в NVS\n"
@@ -404,6 +419,26 @@ static void handle_console_command(const char *cmd)
         kouki_config_set_silent(val != 0);
         printf("OK (режим тишины: %s, выполните 'save' для сохранения в NVS)\n",
                val != 0 ? "включен (без речи)" : "выключен (с речью)");
+    } else if (strncmp(cmd, "set_wake ", 9) == 0) {
+        const char *arg = cmd + 9;
+        while (*arg == ' ') arg++;
+        int val = atoi(arg);
+        kouki_config_set_wake_enabled(val != 0);
+        printf("OK (wake-word: %s, выполните 'save' для сохранения в NVS)\n",
+               val != 0 ? "включен (\"эй гин\", отсечка 3.0с)" : "выключен");
+    } else if (strncmp(cmd, "set_wake_th ", 12) == 0) {
+        const char *arg = cmd + 12;
+        while (*arg == ' ') arg++;
+        int th = atoi(arg);
+        esp_err_t err = kouki_config_set_wake_threshold((uint8_t)th);
+        if (err == ESP_OK) {
+            printf("OK (порог wake-word: %d%%, выполните 'save' для сохранения в NVS)\n", th);
+        } else {
+            printf("Ошибка: порог должен быть от %d до %d (по умолч. %d)\n",
+                   KOUKI_CONFIG_MIN_WAKE_THRESHOLD,
+                   KOUKI_CONFIG_MAX_WAKE_THRESHOLD,
+                   KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD);
+        }
     } else if (strcmp(cmd, "save") == 0) {
         esp_err_t err = kouki_config_save();
         if (err == ESP_OK) {

@@ -20,6 +20,10 @@
 
 #define KOUKI_CONFIG_DEFAULT_SOURCE       "station"
 #define KOUKI_CONFIG_DEFAULT_OTA_INTERVAL 43200
+#define KOUKI_CONFIG_DEFAULT_WAKE_ENABLED   1
+#define KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD 60
+#define KOUKI_CONFIG_MIN_WAKE_THRESHOLD     10
+#define KOUKI_CONFIG_MAX_WAKE_THRESHOLD     95
 
 typedef struct {
     uint8_t cfg_ver;
@@ -31,6 +35,8 @@ typedef struct {
     char ca_pem[KOUKI_CONFIG_MAX_CA_PEM_LEN + 1];
     uint32_t ota_int_s;
     bool     silent;
+    bool     wake_en;
+    uint8_t  wake_th;
 } kouki_config_t;
 
 /* Включен ли режим тишины (без воспроизведения речи). */
@@ -64,6 +70,12 @@ const char *kouki_config_get_dev_source(void);
 const char *kouki_config_get_ca_pem(void);
 const char *kouki_config_get_effective_ca_pem(void);
 uint32_t kouki_config_get_ota_interval_s(void);
+
+/* Wake-word настройки (T17/T24) */
+bool kouki_config_get_wake_enabled(void);
+esp_err_t kouki_config_set_wake_enabled(bool enabled);
+uint8_t kouki_config_get_wake_threshold(void);
+esp_err_t kouki_config_set_wake_threshold(uint8_t threshold);
 
 /* Сеттеры / валидаторы */
 esp_err_t kouki_config_set_wifi(const char *ssid, const char *pass);

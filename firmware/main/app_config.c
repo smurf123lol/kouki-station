@@ -25,6 +25,8 @@ static void set_defaults(void)
 #else
     s_cfg.silent = false;
 #endif
+    s_cfg.wake_en = (KOUKI_CONFIG_DEFAULT_WAKE_ENABLED != 0);
+    s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
 }
 
 esp_err_t kouki_config_init(void)
@@ -85,6 +87,22 @@ esp_err_t kouki_config_init(void)
     uint8_t silent_val = 0;
     if (nvs_get_u8(handle, "silent", &silent_val) == ESP_OK) {
         s_cfg.silent = (silent_val != 0);
+    }
+
+    uint8_t wake_en_val = 0;
+    if (nvs_get_u8(handle, "wake_en", &wake_en_val) == ESP_OK) {
+        s_cfg.wake_en = (wake_en_val != 0);
+    } else {
+        s_cfg.wake_en = (KOUKI_CONFIG_DEFAULT_WAKE_ENABLED != 0);
+    }
+
+    uint8_t wake_th_val = 0;
+    if (nvs_get_u8(handle, "wake_th", &wake_th_val) == ESP_OK &&
+        wake_th_val >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD &&
+        wake_th_val <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD) {
+        s_cfg.wake_th = wake_th_val;
+    } else {
+        s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
     }
 
     nvs_close(handle);
@@ -298,6 +316,8 @@ esp_err_t kouki_config_save(void)
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u32(handle, "ota_int_s", s_cfg.ota_int_s));
     ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(handle, "silent", s_cfg.silent ? 1 : 0));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(handle, "wake_en", s_cfg.wake_en ? 1 : 0));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(handle, "wake_th", s_cfg.wake_th));
 
     err = nvs_commit(handle);
     nvs_close(handle);
@@ -321,6 +341,32 @@ esp_err_t kouki_config_erase(void)
     }
     set_defaults();
     ESP_LOGI(TAG, "конфигурация очищена из NVS");
+    return ESP_OK;
+}
+
+bool kouki_config_get_wake_enabled(void)
+{
+    return s_cfg.wake_en;
+}
+
+esp_err_t kouki_config_set_wake_enabled(bool enabled)
+{
+    s_cfg.wake_en = enabled;
+    return ESP_OK;
+}
+
+uint8_t kouki_config_get_wake_threshold(void)
+{
+    return (s_cfg.wake_th >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD && s_cfg.wake_th <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD)
+        ? s_cfg.wake_th : KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
+}
+
+esp_err_t kouki_config_set_wake_threshold(uint8_t threshold)
+{
+    if (threshold < KOUKI_CONFIG_MIN_WAKE_THRESHOLD || threshold > KOUKI_CONFIG_MAX_WAKE_THRESHOLD) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_cfg.wake_th = threshold;
     return ESP_OK;
 }
 
@@ -348,7 +394,9 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              "dev_source: %s\n"
              "ca_pem: %s\n"
              "ota_int_s: %u\n"
-             "silent: %s\n",
+             "silent: %s\n"
+             "wake_en: %s\n"
+             "wake_th: %u\n",
              (unsigned)s_cfg.cfg_ver,
              s_cfg.wifi_ssid[0] ? "***" : "(не задан)",
              s_cfg.wifi_pass[0] ? "***" : "(пустой)",
@@ -357,5 +405,7 @@ void kouki_config_format_masked(char *buf, size_t max_len)
              s_cfg.dev_source[0] ? s_cfg.dev_source : KOUKI_CONFIG_DEFAULT_SOURCE,
              s_cfg.ca_pem[0] ? "(пользовательский NVS)" : "(вшитый Caddy CA)",
              (unsigned)s_cfg.ota_int_s,
-             s_cfg.silent ? "включен (тишина)" : "выключен (с речью)");
+             s_cfg.silent ? "включен (тишина)" : "выключен (с речью)",
+             s_cfg.wake_en ? "включен (\"эй гин\", отсечка 3.0с)" : "выключен",
+             (unsigned)s_cfg.wake_th);
 }

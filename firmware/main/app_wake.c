@@ -1,160 +1,263 @@
 #include "app_wake.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_config.h"
+#include "dl_rfft.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "wake_model_ey_gin.h"
 
-#if !defined(CONFIG_KOUKI_WAKE_ENABLED)
-/*
- * Кодовое слово выключено в menuconfig: собираем заглушки, чтобы остальной код
- * не зависел от #ifdef-ов, а конфигурация wake-word не обязана существовать.
- */
-esp_err_t kouki_wake_init(void) { return ESP_ERR_NOT_SUPPORTED; }
-void kouki_wake_deinit(void) {}
-bool kouki_wake_is_ready(void) { return false; }
-const char *kouki_wake_model(void) { return "выключено"; }
-bool kouki_wake_feed(const int16_t *pcm, int samples)
-{
-    (void)pcm;
-    (void)samples;
-    return false;
-}
-
-#else
-
-// esp-sr: интерфейс wake-word и загрузка моделей из flash.
-#include "esp_wn_iface.h"
-#include "esp_wn_models.h"
-#include "model_path.h"
 static const char *TAG = "kouki.wake";
 
-static srmodel_list_t *s_models;
-static const esp_wn_iface_t *s_iface;
-static model_iface_data_t *s_data;
-static int16_t *s_chunk_buf;     // ровно один чанк детектора
-static int s_chunk_samples;      // сколько ждём
-static int s_filled;             // сколько уже набрали
-static char s_model[64];
+#define FFT_POINTS       512
+#define FRAME_LEN        480    /* 30 мс при 16 кГц */
+#define FRAME_STEP       160    /* 10 мс при 16 кГц */
+#define MEL_BINS_COUNT   40
+#define TOTAL_CELLS      (WAKE_MODEL_FRAMES * WAKE_MODEL_MELS)
+
+static const int16_t g_mel_bins[MEL_BINS_COUNT + 2] = {
+    2, 4, 5, 7, 9, 10, 12, 15, 17, 19, 22, 24, 27, 30, 33, 36, 40, 44,
+    48, 52, 56, 61, 66, 71, 77, 83, 89, 96, 103, 110, 118, 127, 135,
+    145, 155, 165, 177, 188, 201, 214, 228, 243
+};
+
+static bool s_initialized = false;
+static dl_fft_f32_t *s_fft = NULL;
+static float s_hann_window[FRAME_LEN];
+static float s_pcm_window[FRAME_LEN];
+static float s_step_buf[FRAME_STEP];
+static int s_step_buf_len = 0;
+static float *s_spectrogram = NULL;
+static float *s_norm_spec = NULL;
+static float *s_infer_arena = NULL;
+static int s_step_counter = 0;
+static int s_consecutive_hits = 0;
 
 esp_err_t kouki_wake_init(void)
 {
-    s_models = esp_srmodel_init(CONFIG_KOUKI_WAKE_PARTITION);
-    if (!s_models) {
-        // esp-sr уже написал причину; здесь важно не падать — станция живёт без слова.
-        ESP_LOGE(TAG, "нет модели в партиции '%s': проверьте partitions.csv и CONFIG_SR_WN_*",
-                 CONFIG_KOUKI_WAKE_PARTITION);
-        return ESP_ERR_NOT_FOUND;
+    if (s_initialized) {
+        return ESP_OK;
     }
 
-    char *name = NULL;
-    if (strlen(CONFIG_KOUKI_WAKE_MODEL) > 0) {
-        name = esp_srmodel_filter(s_models, ESP_WN_PREFIX, CONFIG_KOUKI_WAKE_MODEL);
-    }
-    if (!name) {
-        name = esp_srmodel_filter(s_models, ESP_WN_PREFIX, NULL);
-    }
-    if (!name) {
-        ESP_LOGE(TAG, "модели wake-word в партиции нет: включите CONFIG_SR_WN_WN10_HIESP");
-        return ESP_ERR_NOT_FOUND;
+    if (!kouki_config_get_wake_enabled()) {
+        ESP_LOGI(TAG, "детектор wake-word выключен в конфигурации NVS (wake_en=0)");
+        return ESP_ERR_NOT_SUPPORTED;
     }
 
-    s_iface = esp_wn_handle_from_name(name);
-    if (!s_iface) {
-        ESP_LOGE(TAG, "esp-sr не знает модель '%s'", name);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 90 — штатный режим: модель читается из flash, а не поднимается в PSRAM целиком.
-    s_data = s_iface->create(name, DET_MODE_90);
-    if (!s_data) {
-        ESP_LOGE(TAG, "детектор не создался (мало памяти?)");
+    s_fft = dl_rfft_f32_init(FFT_POINTS, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_fft) {
+        ESP_LOGE(TAG, "не удалось инициализировать FFT-инстанс %d точек", FFT_POINTS);
         return ESP_ERR_NO_MEM;
     }
 
-    s_chunk_samples = s_iface->get_samp_chunksize(s_data);
-    const int rate = s_iface->get_samp_rate(s_data);
-    s_chunk_buf = heap_caps_malloc((size_t)s_chunk_samples * sizeof(int16_t),
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_chunk_buf) {
-        ESP_LOGE(TAG, "не хватило внутренней памяти под чанк %d сэмплов", s_chunk_samples);
-        s_iface->destroy(s_data);
-        s_data = NULL;
+    for (int i = 0; i < FRAME_LEN; i++) {
+        s_hann_window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(FRAME_LEN - 1)));
+    }
+    memset(s_pcm_window, 0, sizeof(s_pcm_window));
+    s_step_buf_len = 0;
+
+    /* Аллокация буфера спектрограммы (23.6 КБ) в PSRAM или куче */
+    s_spectrogram = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_spectrogram) {
+        s_spectrogram = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (!s_spectrogram) {
+        ESP_LOGE(TAG, "не удалось выделить память под буфер спектрограммы (%u байт)", (unsigned)(TOTAL_CELLS * sizeof(float)));
+        dl_rfft_f32_deinit(s_fft);
+        s_fft = NULL;
         return ESP_ERR_NO_MEM;
     }
-    s_filled = 0;
+    memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
 
-    // Порог задаётся на слово (нумерация в esp-sr с единицы).
-    const float threshold = (float)CONFIG_KOUKI_WAKE_THRESHOLD / 100.0f;
-    const int words = s_iface->get_word_num(s_data);
-    for (int i = 1; i <= words; i++) {
-        s_iface->set_det_threshold(s_data, threshold, i);
+    /* Буфер нормализованной спектрограммы для инференса */
+    s_norm_spec = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_norm_spec) {
+        s_norm_spec = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
-
-    snprintf(s_model, sizeof(s_model), "%s", name);
-    char *word = esp_wn_wakeword_from_name(name);
-    ESP_LOGI(TAG, "детектор готов: модель %s, слово «%s», порог %.2f, чанк %d сэмплов, %d Гц",
-             s_model, word ? word : "?", (double)threshold, s_chunk_samples, rate);
-
-    if (rate != 16000) {
-        // Микрофон отдаёт 16 кГц; детектор на другой частоте будет слышать «не то».
-        ESP_LOGW(TAG, "детектор ждёт %d Гц, а микрофон отдаёт 16000 — слово может не срабатывать", rate);
+    if (!s_norm_spec) {
+        free(s_spectrogram);
+        s_spectrogram = NULL;
+        dl_rfft_f32_deinit(s_fft);
+        s_fft = NULL;
+        return ESP_ERR_NO_MEM;
     }
+    memset(s_norm_spec, 0, TOTAL_CELLS * sizeof(float));
+
+    /* Буфер промежуточных активаций инференса (142 КБ) в PSRAM */
+    s_infer_arena = (float *)heap_caps_malloc(WAKE_MODEL_ARENA_FLOATS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_infer_arena) {
+        s_infer_arena = (float *)heap_caps_malloc(WAKE_MODEL_ARENA_FLOATS * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (!s_infer_arena) {
+        ESP_LOGE(TAG, "не удалось выделить память под арену активаций (%u байт)", (unsigned)(WAKE_MODEL_ARENA_FLOATS * sizeof(float)));
+        free(s_norm_spec);
+        s_norm_spec = NULL;
+        free(s_spectrogram);
+        s_spectrogram = NULL;
+        dl_rfft_f32_deinit(s_fft);
+        s_fft = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_infer_arena, 0, WAKE_MODEL_ARENA_FLOATS * sizeof(float));
+
+    s_step_counter = 0;
+    s_consecutive_hits = 0;
+    s_initialized = true;
+
+    uint8_t th = kouki_config_get_wake_threshold();
+    (void)th;
+    (void)TAG;
+    ESP_LOGI(TAG, "детектор «эй гин» готов: microWakeWord INT8 (%u байт), порог %u%% (%.2f), окно %d с",
+             (unsigned)WAKE_MODEL_EY_GIN_LEN, (unsigned)th, (double)th / 100.0, 1);
 
     return ESP_OK;
 }
 
 void kouki_wake_deinit(void)
 {
-    if (s_data && s_iface) {
-        s_iface->destroy(s_data);
+    if (s_fft) {
+        dl_rfft_f32_deinit(s_fft);
+        s_fft = NULL;
     }
-    s_data = NULL;
-    s_iface = NULL;
-    free(s_chunk_buf);
-    s_chunk_buf = NULL;
-    s_chunk_samples = 0;
-    s_filled = 0;
-    if (s_models) {
-        esp_srmodel_deinit(s_models);
+    if (s_spectrogram) {
+        free(s_spectrogram);
+        s_spectrogram = NULL;
     }
-    s_models = NULL;
-    s_model[0] = '\0';
+    if (s_norm_spec) {
+        free(s_norm_spec);
+        s_norm_spec = NULL;
+    }
+    if (s_infer_arena) {
+        free(s_infer_arena);
+        s_infer_arena = NULL;
+    }
+    s_initialized = false;
+    s_step_buf_len = 0;
+    s_step_counter = 0;
+    s_consecutive_hits = 0;
 }
 
 bool kouki_wake_is_ready(void)
 {
-    return s_data != NULL;
+    return s_initialized && kouki_config_get_wake_enabled();
 }
 
 const char *kouki_wake_model(void)
 {
-    return s_model[0] ? s_model : "none";
+    return "эй гин";
+}
+
+static void process_frame(void)
+{
+    static float fft_buf[FFT_POINTS];
+    memset(fft_buf, 0, sizeof(fft_buf));
+
+    for (int i = 0; i < FRAME_LEN; i++) {
+        fft_buf[i] = s_pcm_window[i] * s_hann_window[i];
+    }
+
+    dl_rfft_f32_run(s_fft, fft_buf);
+
+    /* Вычисление спектра мощности */
+    static float power_spec[FFT_POINTS / 2 + 1];
+    power_spec[0] = (fft_buf[0] * fft_buf[0]) / (float)FRAME_LEN;
+    power_spec[FFT_POINTS / 2] = (fft_buf[1] * fft_buf[1]) / (float)FRAME_LEN;
+    for (int k = 1; k < FFT_POINTS / 2; k++) {
+        float re = fft_buf[2 * k];
+        float im = fft_buf[2 * k + 1];
+        power_spec[k] = (re * re + im * im) / (float)FRAME_LEN;
+    }
+
+    /* Mel-фильтры */
+    float log_mel[MEL_BINS_COUNT];
+    for (int m = 0; m < MEL_BINS_COUNT; m++) {
+        int left = g_mel_bins[m];
+        int center = g_mel_bins[m + 1];
+        int right = g_mel_bins[m + 2];
+        float energy = 0.0f;
+
+        for (int k = left; k < center; k++) {
+            float w = (float)(k - left) / (float)(center - left);
+            energy += power_spec[k] * w;
+        }
+        for (int k = center; k < right; k++) {
+            float w = (float)(right - k) / (float)(right - center);
+            energy += power_spec[k] * w;
+        }
+        log_mel[m] = logf(energy + 1e-6f);
+    }
+
+    /* Сдвиг матрицы спектрограммы на 1 фрейм влево */
+    memmove(s_spectrogram, s_spectrogram + MEL_BINS_COUNT,
+            (WAKE_MODEL_FRAMES - 1) * MEL_BINS_COUNT * sizeof(float));
+    memcpy(s_spectrogram + (WAKE_MODEL_FRAMES - 1) * MEL_BINS_COUNT,
+           log_mel, MEL_BINS_COUNT * sizeof(float));
 }
 
 bool kouki_wake_feed(const int16_t *pcm, int samples)
 {
-    if (!s_data || !pcm || samples <= 0) {
+    if (!s_initialized || !kouki_config_get_wake_enabled() || !pcm || samples <= 0) {
         return false;
     }
 
     bool detected = false;
+    const float threshold = (float)kouki_config_get_wake_threshold() / 100.0f;
 
     for (int i = 0; i < samples; i++) {
-        s_chunk_buf[s_filled++] = pcm[i];
-        if (s_filled < s_chunk_samples) {
-            continue;
-        }
+        s_step_buf[s_step_buf_len++] = (float)pcm[i] / 32768.0f;
 
-        if (s_iface->detect(s_data, s_chunk_buf) == WAKENET_DETECTED) {
-            detected = true;
+        if (s_step_buf_len >= FRAME_STEP) {
+            s_step_buf_len = 0;
+
+            /* Блочный сдвиг окна PCM на FRAME_STEP сэмплов */
+            memmove(s_pcm_window, s_pcm_window + FRAME_STEP, (FRAME_LEN - FRAME_STEP) * sizeof(float));
+            memcpy(s_pcm_window + (FRAME_LEN - FRAME_STEP), s_step_buf, FRAME_STEP * sizeof(float));
+
+            process_frame();
+            s_step_counter++;
+
+            /* Инференс каждые 3 фрейма (каждые 30 мс) для минимизации нагрузки CPU */
+            if (s_step_counter >= 3) {
+                s_step_counter = 0;
+
+                /* Стандартизация спектрограммы (mean 0, std 1) */
+                float sum = 0.0f;
+                float sq_sum = 0.0f;
+                for (int c = 0; c < TOTAL_CELLS; c++) {
+                    float v = s_spectrogram[c];
+                    sum += v;
+                    sq_sum += v * v;
+                }
+                float mean = sum / (float)TOTAL_CELLS;
+                float var = (sq_sum / (float)TOTAL_CELLS) - (mean * mean);
+                float std = sqrtf((var > 1e-6f) ? var : 1e-6f);
+
+                for (int c = 0; c < TOTAL_CELLS; c++) {
+                    s_norm_spec[c] = (s_spectrogram[c] - mean) / std;
+                }
+
+                float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
+
+                if (prob >= threshold) {
+                    s_consecutive_hits++;
+                    if (s_consecutive_hits >= 3) {
+                        ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
+                                 (double)prob, (double)threshold);
+                        detected = true;
+                        s_consecutive_hits = 0;
+                        /* Сброс буфера после срабатывания */
+                        memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
+                    }
+                } else {
+                    s_consecutive_hits = 0;
+                }
+            }
         }
-        s_filled = 0;
     }
 
     return detected;
 }
-
-#endif // CONFIG_KOUKI_WAKE_ENABLED

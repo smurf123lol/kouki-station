@@ -194,6 +194,10 @@ void kouki_voice_debug_levels(void)
 
 /* Момент, когда закончится автозапись после кодового слова; 0 — обычная запись. */
 static TickType_t s_wake_stop_tick;
+static bool s_wake_recording;
+static bool s_wake_speech_detected;
+static uint32_t s_wake_silence_chunks;
+static bool s_wake_cancelled;
 
 /* T73: окно продолжения диалога */
 static TickType_t s_followup_until_tick;
@@ -236,6 +240,31 @@ static esp_err_t record_chunk(void)
             if (silence_ms >= CONFIG_KOUKI_FOLLOWUP_SILENCE_MS) {
                 ESP_LOGI(TAG, "тишина в продолжении (%u мс) — завершаю запись", (unsigned)silence_ms);
                 s_stop_requested = true;
+            }
+        }
+    }
+
+    if (s_wake_recording) {
+        if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+            if (!s_wake_speech_detected) {
+                ESP_LOGI(TAG, "wake-сессия: обнаружена речь, отслеживаю окончание фразы");
+                s_wake_speech_detected = true;
+            }
+            s_wake_silence_chunks = 0;
+        } else {
+            s_wake_silence_chunks++;
+            uint32_t silence_ms = (uint32_t)(s_wake_silence_chunks * ((uint64_t)RECORD_CHUNK * 1000 / SAMPLE_RATE));
+            if (s_wake_speech_detected) {
+                if (silence_ms >= 3000) {
+                    ESP_LOGI(TAG, "тишина после речи (3000 мс) — завершаю запись wake-сессии");
+                    s_stop_requested = true;
+                }
+            } else {
+                if (silence_ms >= 5000) {
+                    ESP_LOGI(TAG, "тишина после wake-word (5 с) — отмена записи");
+                    s_wake_cancelled = true;
+                    s_stop_requested = true;
+                }
             }
         }
     }
@@ -306,29 +335,37 @@ static void followup_step(void)
  */
 static void idle_step(void)
 {
-#if CONFIG_KOUKI_WAKE_ENABLED
     static int16_t mono[RECORD_CHUNK];
 
-    if (!kouki_wake_is_ready() || read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+    if (!kouki_wake_is_ready()) {
+        if (kouki_config_get_wake_enabled()) {
+            kouki_wake_init();
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
         return;
     }
 
+    if (read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        return;
+    }
+
     if (kouki_wake_feed(mono, RECORD_CHUNK)) {
-        ESP_LOGI(TAG, "услышали кодовое слово (%s): записываю %d с",
-                 kouki_wake_model(), CONFIG_KOUKI_WAKE_RECORD_S);
+        ESP_LOGI(TAG, "услышали кодовое слово (%s): запускаю запись с VAD (макс %d с)",
+                 kouki_wake_model(), CONFIG_KOUKI_MAX_RECORD_S);
         /*
          * Пока идёт отправка предыдущей фразы, буфер занят: слово просто пропустим.
          * WAKE заменяет START, а не добавляется к нему — на срабатывание ровно
          * один сигнал (тот же старт, только другой тон).
          */
         if (start_recording_internal(KOUKI_TONE_WAKE) == ESP_OK) {
-            s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_WAKE_RECORD_S * 1000);
+            s_wake_recording = true;
+            s_wake_speech_detected = false;
+            s_wake_silence_chunks = 0;
+            s_wake_cancelled = false;
+            s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_MAX_RECORD_S * 1000);
         }
     }
-#else
-    vTaskDelay(pdMS_TO_TICKS(20));
-#endif
 }
 
 static void record_task(void *arg)
@@ -384,13 +421,18 @@ static void finish_recording(void)
     }
 
     const size_t bytes = s_sample_bytes;
+    const bool was_cancelled = s_wake_cancelled;
     s_stop_requested = false;
     s_wake_stop_tick = 0;
+    s_wake_recording = false;
+    s_wake_speech_detected = false;
+    s_wake_silence_chunks = 0;
+    s_wake_cancelled = false;
     xSemaphoreGive(s_lock);
 
     result.duration_ms = (uint32_t)((uint64_t)(bytes / BYTES_PER_SAMPLE) * 1000 / SAMPLE_RATE);
 
-    if (bytes == 0) {
+    if (bytes == 0 || was_cancelled) {
         s_dialogue_continue = false;
         copy_str(result.error, sizeof(result.error), "Тишина: ничего не записалось");
         publish(KOUKI_VOICE_ERROR, &result);
@@ -746,12 +788,10 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
 
-#if CONFIG_KOUKI_WAKE_ENABLED
-    /* Детектор не критичен: если модели нет, станция продолжает работать по кнопке. */
+    /* Детектор не критичен: если выключен в NVS или не готов, станция работает по кнопке. */
     if (kouki_wake_init() != ESP_OK) {
-        ESP_LOGW(TAG, "кодовое слово недоступно, работаем по кнопке");
+        ESP_LOGI(TAG, "wake-word деактивирован или недоступен, работаем по кнопке");
     }
-#endif
 
     ESP_LOGI(TAG, "запись до %d с, канал %d, сервер %s", CONFIG_KOUKI_MAX_RECORD_S,
              CONFIG_KOUKI_MIC_CHANNEL, kouki_config_get_srv_url());
@@ -832,6 +872,10 @@ static esp_err_t start_recording_internal(kouki_tone_t signal)
         s_sample_bytes = 0;
         s_stop_requested = false;
         s_wake_stop_tick = 0;
+        s_wake_recording = (signal == KOUKI_TONE_WAKE);
+        s_wake_speech_detected = false;
+        s_wake_silence_chunks = 0;
+        s_wake_cancelled = false;
         start = true;
     }
 
