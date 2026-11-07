@@ -49,8 +49,10 @@ idf_component_register(
         mbedtls
         audio_board
         espressif__esp_codec_dev
-        # Wake-word: esp-sr (модели — в разделе model, см. partitions.csv)
+        # Wake-word: esp-sr, esp-dl FFT и microWakeWord
         espressif__esp-sr
+        espressif__dl_fft
+        espressif__esp-tflite-micro
     EMBED_TXTFILES
         "certs/kouki-local-root.pem"
 )
