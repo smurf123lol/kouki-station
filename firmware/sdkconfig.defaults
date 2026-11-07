@@ -44,3 +44,8 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
 # OTA и автоматический откат прошивки (T16)
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Выделение буферов mbedtls в PSRAM для исключения -0x7F00
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Разрешить HTTP для локальной отладки и подключения к серверу
+CONFIG_KOUKI_ALLOW_HTTP=y

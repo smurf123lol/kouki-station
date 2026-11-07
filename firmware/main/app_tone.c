@@ -1,3 +1,4 @@
+#include "app_wake.h"
 /*
  * Звуковые сигналы станции: синтез PCM16 16 кГц и вывод через аудиокодек.
  *
@@ -303,6 +304,9 @@ void kouki_tone_play(kouki_tone_t tone)
     if (play_err != ESP_OK) {
         ESP_LOGE(TAG, "кодек не принял сигнал: %s", esp_err_to_name(play_err));
     }
+
+    /* После любого звукового сигнала подавляем детектор на 800 мс для защиты от эха */
+    kouki_wake_mute(800);
 }
 
 #endif // CONFIG_KOUKI_SOUND_SIGNALS

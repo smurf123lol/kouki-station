@@ -1,3 +1,4 @@
+#include "app_wake.h"
 /*
  * Озвучивание ответа станции: POST /api/speech -> WAV 16 кГц моно -> кодек.
  *
@@ -477,6 +478,7 @@ static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len)
         s_busy = true;
         err = esp_audio_play(samples, bytes, portMAX_DELAY);
         s_busy = false;
+    kouki_wake_mute(1000);
     }
 
     free(wav);

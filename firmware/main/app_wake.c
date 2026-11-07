@@ -1,3 +1,4 @@
+#include "esp_timer.h"
 #include "app_wake.h"
 
 #include <math.h>
@@ -115,6 +116,26 @@ esp_err_t kouki_wake_init(void)
     return ESP_OK;
 }
 
+static int64_t s_mute_until_us = 0;
+static int s_consecutive_hits = 0;
+
+void kouki_wake_reset(void)
+{
+    s_step_buf_len = 0;
+    s_step_counter = 0;
+    s_consecutive_hits = 0;
+    if (s_spectrogram) {
+        memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
+    }
+    memset(s_pcm_window, 0, sizeof(s_pcm_window));
+}
+
+void kouki_wake_mute(int duration_ms)
+{
+    s_mute_until_us = esp_timer_get_time() + (int64_t)duration_ms * 1000;
+    kouki_wake_reset();
+}
+
 void kouki_wake_deinit(void)
 {
     if (s_fft) {
@@ -134,8 +155,7 @@ void kouki_wake_deinit(void)
         s_infer_arena = NULL;
     }
     s_initialized = false;
-    s_step_buf_len = 0;
-    s_step_counter = 0;
+    kouki_wake_reset();
 }
 
 bool kouki_wake_is_ready(void)
@@ -201,6 +221,10 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
         return false;
     }
 
+    if (esp_timer_get_time() < s_mute_until_us) {
+        return false;
+    }
+
     bool detected = false;
     const float threshold = (float)kouki_config_get_wake_threshold() / 100.0f;
 
@@ -240,11 +264,16 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                 float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
 
                 if (prob >= threshold) {
-                    ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
-                             (double)prob, (double)threshold);
-                    detected = true;
-                    /* Сброс буфера после срабатывания */
-                    memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
+                    s_consecutive_hits++;
+                    if (s_consecutive_hits >= 2) {
+                        ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
+                                 (double)prob, (double)threshold);
+                        detected = true;
+                        s_consecutive_hits = 0;
+                        kouki_wake_reset();
+                    }
+                } else {
+                    s_consecutive_hits = 0;
                 }
             }
         }
