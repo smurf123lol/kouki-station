@@ -35,7 +35,6 @@ static float *s_spectrogram = NULL;
 static float *s_norm_spec = NULL;
 static float *s_infer_arena = NULL;
 static int s_step_counter = 0;
-static int s_consecutive_hits = 0;
 
 esp_err_t kouki_wake_init(void)
 {
@@ -105,7 +104,6 @@ esp_err_t kouki_wake_init(void)
     memset(s_infer_arena, 0, WAKE_MODEL_ARENA_FLOATS * sizeof(float));
 
     s_step_counter = 0;
-    s_consecutive_hits = 0;
     s_initialized = true;
 
     uint8_t th = kouki_config_get_wake_threshold();
@@ -138,7 +136,6 @@ void kouki_wake_deinit(void)
     s_initialized = false;
     s_step_buf_len = 0;
     s_step_counter = 0;
-    s_consecutive_hits = 0;
 }
 
 bool kouki_wake_is_ready(void)
@@ -220,8 +217,8 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
             process_frame();
             s_step_counter++;
 
-            /* Инференс каждые 3 фрейма (каждые 30 мс) для минимизации нагрузки CPU */
-            if (s_step_counter >= 3) {
+            /* Инференс каждые 15 фреймов (каждые 150 мс) для оптимизации нагрузки CPU */
+            if (s_step_counter >= 15) {
                 s_step_counter = 0;
 
                 /* Стандартизация спектрограммы (mean 0, std 1) */
@@ -243,17 +240,11 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                 float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
 
                 if (prob >= threshold) {
-                    s_consecutive_hits++;
-                    if (s_consecutive_hits >= 3) {
-                        ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
-                                 (double)prob, (double)threshold);
-                        detected = true;
-                        s_consecutive_hits = 0;
-                        /* Сброс буфера после срабатывания */
-                        memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
-                    }
-                } else {
-                    s_consecutive_hits = 0;
+                    ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
+                             (double)prob, (double)threshold);
+                    detected = true;
+                    /* Сброс буфера после срабатывания */
+                    memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
                 }
             }
         }

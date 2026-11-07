@@ -1033,7 +1033,7 @@ static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
     for (int oh = 0; oh < 74; oh++) {
         for (int ow = 0; ow < 20; ow++) {
             for (int oc = 0; oc < 16; oc++) {
-                float sum = g_b1[oc];
+                float acc = 0.0f;
                 const int8_t *w_ptr = &g_w1[oc * 25];
                 for (int kh = 0; kh < 5; kh++) {
                     int ih = oh * 2 - 2 + kh;
@@ -1041,11 +1041,10 @@ static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
                     for (int kw = 0; kw < 5; kw++) {
                         int iw = ow * 2 - 2 + kw;
                         if (iw < 0 || iw >= 40) continue;
-                        float val = spec[ih * 40 + iw];
-                        int8_t w = w_ptr[kh * 5 + kw];
-                        sum += val * (w * g_s1);
+                        acc += spec[ih * 40 + iw] * (float)w_ptr[kh * 5 + kw];
                     }
                 }
+                float sum = acc * g_s1 + g_b1[oc];
                 act1[(oh * 20 + ow) * 16 + oc] = (sum > 0.0f) ? sum : 0.0f;
             }
         }
@@ -1073,11 +1072,12 @@ static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
             }
             /* Pointwise 16 -> 32 */
             for (int oc = 0; oc < 32; oc++) {
-                float sum = g_b2_pw[oc];
+                float acc = 0.0f;
                 const int8_t *w_ptr = &g_w2_pw[oc * 16];
                 for (int ic = 0; ic < 16; ic++) {
-                    sum += dw_out[ic] * (w_ptr[ic] * g_s2_pw);
+                    acc += dw_out[ic] * (float)w_ptr[ic];
                 }
+                float sum = acc * g_s2_pw + g_b2_pw[oc];
                 act2[(oh * 10 + ow) * 32 + oc] = (sum > 0.0f) ? sum : 0.0f;
             }
         }
@@ -1105,11 +1105,12 @@ static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
             }
             /* Pointwise 32 -> 64 */
             for (int oc = 0; oc < 64; oc++) {
-                float sum = g_b3_pw[oc];
+                float acc = 0.0f;
                 const int8_t *w_ptr = &g_w3_pw[oc * 32];
                 for (int ic = 0; ic < 32; ic++) {
-                    sum += dw_out[ic] * (w_ptr[ic] * g_s3_pw);
+                    acc += dw_out[ic] * (float)w_ptr[ic];
                 }
+                float sum = acc * g_s3_pw + g_b3_pw[oc];
                 act3[(oh * 5 + ow) * 64 + oc] = (sum > 0.0f) ? sum : 0.0f;
             }
         }
