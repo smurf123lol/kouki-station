@@ -29,9 +29,11 @@ static bool s_initialized = false;
 static dl_fft_f32_t *s_fft = NULL;
 static float s_hann_window[FRAME_LEN];
 static float s_pcm_window[FRAME_LEN];
-static int s_new_samples = 0;
+static float s_step_buf[FRAME_STEP];
+static int s_step_buf_len = 0;
 static float *s_spectrogram = NULL;
 static float *s_norm_spec = NULL;
+static float *s_infer_arena = NULL;
 static int s_step_counter = 0;
 static int s_consecutive_hits = 0;
 
@@ -56,7 +58,7 @@ esp_err_t kouki_wake_init(void)
         s_hann_window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(FRAME_LEN - 1)));
     }
     memset(s_pcm_window, 0, sizeof(s_pcm_window));
-    s_new_samples = 0;
+    s_step_buf_len = 0;
 
     /* Аллокация буфера спектрограммы (23.6 КБ) в PSRAM или куче */
     s_spectrogram = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -85,6 +87,23 @@ esp_err_t kouki_wake_init(void)
     }
     memset(s_norm_spec, 0, TOTAL_CELLS * sizeof(float));
 
+    /* Буфер промежуточных активаций инференса (142 КБ) в PSRAM */
+    s_infer_arena = (float *)heap_caps_malloc(WAKE_MODEL_ARENA_FLOATS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_infer_arena) {
+        s_infer_arena = (float *)heap_caps_malloc(WAKE_MODEL_ARENA_FLOATS * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (!s_infer_arena) {
+        ESP_LOGE(TAG, "не удалось выделить память под арену активаций (%u байт)", (unsigned)(WAKE_MODEL_ARENA_FLOATS * sizeof(float)));
+        free(s_norm_spec);
+        s_norm_spec = NULL;
+        free(s_spectrogram);
+        s_spectrogram = NULL;
+        dl_rfft_f32_deinit(s_fft);
+        s_fft = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_infer_arena, 0, WAKE_MODEL_ARENA_FLOATS * sizeof(float));
+
     s_step_counter = 0;
     s_consecutive_hits = 0;
     s_initialized = true;
@@ -112,8 +131,12 @@ void kouki_wake_deinit(void)
         free(s_norm_spec);
         s_norm_spec = NULL;
     }
+    if (s_infer_arena) {
+        free(s_infer_arena);
+        s_infer_arena = NULL;
+    }
     s_initialized = false;
-    s_new_samples = 0;
+    s_step_buf_len = 0;
     s_step_counter = 0;
     s_consecutive_hits = 0;
 }
@@ -185,13 +208,15 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
     const float threshold = (float)kouki_config_get_wake_threshold() / 100.0f;
 
     for (int i = 0; i < samples; i++) {
-        /* Сдвигаем PCM буфер на 1 сэмпл */
-        memmove(s_pcm_window, s_pcm_window + 1, (FRAME_LEN - 1) * sizeof(float));
-        s_pcm_window[FRAME_LEN - 1] = (float)pcm[i] / 32768.0f;
-        s_new_samples++;
+        s_step_buf[s_step_buf_len++] = (float)pcm[i] / 32768.0f;
 
-        if (s_new_samples >= FRAME_STEP) {
-            s_new_samples = 0;
+        if (s_step_buf_len >= FRAME_STEP) {
+            s_step_buf_len = 0;
+
+            /* Блочный сдвиг окна PCM на FRAME_STEP сэмплов */
+            memmove(s_pcm_window, s_pcm_window + FRAME_STEP, (FRAME_LEN - FRAME_STEP) * sizeof(float));
+            memcpy(s_pcm_window + (FRAME_LEN - FRAME_STEP), s_step_buf, FRAME_STEP * sizeof(float));
+
             process_frame();
             s_step_counter++;
 
@@ -215,7 +240,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                     s_norm_spec[c] = (s_spectrogram[c] - mean) / std;
                 }
 
-                float prob = wake_model_ey_gin_infer(s_norm_spec);
+                float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
 
                 if (prob >= threshold) {
                     s_consecutive_hits++;

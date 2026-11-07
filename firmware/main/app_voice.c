@@ -335,11 +335,18 @@ static void followup_step(void)
  */
 static void idle_step(void)
 {
-#if CONFIG_KOUKI_WAKE_ENABLED
     static int16_t mono[RECORD_CHUNK];
 
-    if (!kouki_wake_is_ready() || read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+    if (!kouki_wake_is_ready()) {
+        if (kouki_config_get_wake_enabled()) {
+            kouki_wake_init();
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+
+    if (read_mic(mono, RECORD_CHUNK) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));
         return;
     }
 
@@ -359,9 +366,6 @@ static void idle_step(void)
             s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_MAX_RECORD_S * 1000);
         }
     }
-#else
-    vTaskDelay(pdMS_TO_TICKS(20));
-#endif
 }
 
 static void record_task(void *arg)
@@ -784,12 +788,10 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
 
-#if CONFIG_KOUKI_WAKE_ENABLED
-    /* Детектор не критичен: если модели нет, станция продолжает работать по кнопке. */
+    /* Детектор не критичен: если выключен в NVS или не готов, станция работает по кнопке. */
     if (kouki_wake_init() != ESP_OK) {
-        ESP_LOGW(TAG, "кодовое слово недоступно, работаем по кнопке");
+        ESP_LOGI(TAG, "wake-word деактивирован или недоступен, работаем по кнопке");
     }
-#endif
 
     ESP_LOGI(TAG, "запись до %d с, канал %d, сервер %s", CONFIG_KOUKI_MAX_RECORD_S,
              CONFIG_KOUKI_MIC_CHANNEL, kouki_config_get_srv_url());

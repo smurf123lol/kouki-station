@@ -15,6 +15,7 @@
 #define WAKE_MODEL_EY_GIN_LEN 5472
 #define WAKE_MODEL_FRAMES 148
 #define WAKE_MODEL_MELS 40
+#define WAKE_MODEL_ARENA_FLOATS (74 * 20 * 16 + 37 * 10 * 32)
 
 static const int8_t g_w1[400] = {
     66, -49, -20, -56, 96, 25, -93, -44, -3, -64, 84, -87,
@@ -1015,10 +1016,20 @@ __attribute__((aligned(16))) static const uint8_t g_wake_model_ey_gin_data[WAKE_
  * Вход: spec[148 * 40] — стандартизованная мел-спектрограмма.
  * Выход: вероятность от 0.0f до 1.0f (уверенность распознавания «эй гин»).
  */
-static inline float wake_model_ey_gin_infer(const float *spec)
+static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
 {
+    float *dyn_arena = NULL;
+    if (!arena) {
+        dyn_arena = (float *)malloc(WAKE_MODEL_ARENA_FLOATS * sizeof(float));
+        if (!dyn_arena) return 0.0f;
+        arena = dyn_arena;
+    }
+
+    float *act1 = arena;
+    float *act2 = arena + (74 * 20 * 16);
+    float *act3 = act1; /* Слой 2 завершил чтение act1; размер act3 (6080) <= act1 (23680) */
+
     /* Слой 1: Conv2D(1 -> 16, k=5x5, s=2, p=2) + ReLU, выход 74x20x16 */
-    static float act1[74 * 20 * 16];
     for (int oh = 0; oh < 74; oh++) {
         for (int ow = 0; ow < 20; ow++) {
             for (int oc = 0; oc < 16; oc++) {
@@ -1041,7 +1052,6 @@ static inline float wake_model_ey_gin_infer(const float *spec)
     }
 
     /* Слой 2: Depthwise Conv2D(k=3x3, s=2, p=1) + Pointwise Conv2D(16 -> 32) + ReLU, выход 37x10x32 */
-    static float act2[37 * 10 * 32];
     for (int oh = 0; oh < 37; oh++) {
         for (int ow = 0; ow < 10; ow++) {
             float dw_out[16];
@@ -1074,7 +1084,6 @@ static inline float wake_model_ey_gin_infer(const float *spec)
     }
 
     /* Слой 3: Depthwise Conv2D(k=3x3, s=2, p=1) + Pointwise Conv2D(32 -> 64) + ReLU, выход 19x5x64 */
-    static float act3[19 * 5 * 64];
     for (int oh = 0; oh < 19; oh++) {
         for (int ow = 0; ow < 5; ow++) {
             float dw_out[32];
@@ -1133,6 +1142,10 @@ static inline float wake_model_ey_gin_infer(const float *spec)
     float logit = g_b_fc2[0];
     for (int j = 0; j < 32; j++) {
         logit += fc1[j] * (g_w_fc2[j] * g_s_fc2);
+    }
+
+    if (dyn_arena) {
+        free(dyn_arena);
     }
 
     /* Сигмоида */
