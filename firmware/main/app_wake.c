@@ -272,13 +272,13 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
             if (s_step_counter >= 10) {
                 s_step_counter = 0;
 
-                /* Не запускаем инференс, пока буфер не прогрелся полным окном (148 фреймов = 1.48 с) */
-                if (s_frames_collected < WAKE_MODEL_FRAMES) {
+                /* Не запускаем инференс первые 30 фреймов (300 мс) после сброса */
+                if (s_frames_collected < 30) {
                     s_consecutive_hits = 0;
                     continue;
                 }
 
-                /* Энергетический фильтр: отсекает фоновый шум и тишину (пик речи >= 750) */
+                /* Энергетический фильтр: отсекает аппаратный ноль и глубокую тишину */
                 int16_t window_max = 0;
                 for (int f = 0; f < WAKE_MODEL_FRAMES; f++) {
                     if (s_frame_peak[f] > window_max) {
@@ -286,7 +286,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                     }
                 }
 
-                if (window_max < 750) {
+                if (window_max < 250) {
                     s_consecutive_hits = 0;
                     continue;
                 }

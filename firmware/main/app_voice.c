@@ -389,9 +389,6 @@ static void idle_step(void)
             s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_MAX_RECORD_S * 1000);
         }
     }
-
-    /* Уступаем минимальный квант времени фоновым задачам и IDLE1 без задержки I2S потока */
-    vTaskDelay(pdMS_TO_TICKS(2));
 }
 
 static void record_task(void *arg)

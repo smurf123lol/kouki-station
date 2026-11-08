@@ -118,7 +118,10 @@ for fpath in station_files:
     c.execute("SELECT input_text FROM classifications WHERE audio_path LIKE ?", (f"%{fname}%",))
     r = c.fetchall()
     txt = r[0][0] if r else ""
-    if any(w in txt.lower() for w in ['гин', 'дин', 'гим', 'гей', 'бей']):
+    t_low = txt.lower()
+    if "родина" in t_low or "один" in t_low or "сегодня" in t_low:
+        continue
+    if any(k in t_low for k in ['гин', 'гим', 'гил', 'дин']) or ('эй' in t_low):
         pos_files.append((fname, fpath))
 conn.close()
 
@@ -152,7 +155,7 @@ for f in negative_station_files:
     try:
         with wave.open(f, "rb") as w:
             pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        is_hard = ("190939" in f) or ("095610" in f) or ("093000" in f)
+        is_hard = any(k in f for k in ["190939", "095610", "102439", "102455", "101815", "101838"])
         step = int(0.08 * SAMPLE_RATE) if is_hard else int(0.10 * SAMPLE_RATE)
         for i in range(0, len(pcm) - TOTAL_SAMPLES, step):
             sl = pcm[i:i + TOTAL_SAMPLES]
@@ -172,7 +175,7 @@ print(f"Собрано {len(room_noises)} фрагментов комнатно�
 print("[3] Синтез мульти-голосов Piper...")
 piper_voices = [None, "ru_RU-dmitri-medium", "ru_RU-denis-medium"]
 piper_positives = []
-pos_texts = ["эй гин", "Эй, гин", "эй гин!", "эйгин", "эй, гин."]
+pos_texts = ["эй гин", "Эй, гин", "эй гин!", "эйгин", "эй, гин.", "эй, дин", "эй, гим"]
 for v in piper_voices:
     for t in pos_texts:
         pcm = synthesize_audio(t, voice=v)
@@ -185,7 +188,7 @@ neg_texts = [
     "эй", "гин", "эти", "игры", "один", "деньги", "книги", "режим",
     "да", "нет", "стоп", "включи", "выключи", "смешка", "нормально",
     "странно работает", "я не понимаю", "что делаешь", "сколько времени",
-    "проверяйте", "запиши и проверяйте", "алиса", "яндекс", "сири"
+    "проверяйте", "запиши и проверяйте", "алиса", "яндекс", "сири", "здорово"
 ]
 for v in piper_voices:
     for t in neg_texts:
@@ -205,7 +208,7 @@ def augment_sample(pcm, is_positive=True, is_user=False):
             pcm_aug = signal.resample(pcm_aug, pitch_len)
             pcm_aug = signal.resample(pcm_aug, new_len)
 
-    pcm_aug = pcm_aug * random.uniform(0.5, 1.3)
+    pcm_aug = pcm_aug * random.uniform(0.5, 1.4)
 
     out = np.zeros(TOTAL_SAMPLES, dtype=np.float32)
     if len(pcm_aug) < TOTAL_SAMPLES:
@@ -233,8 +236,8 @@ print("[4] Формирование сбалансированного дата�
 X = []
 y = []
 
-# 1) Живой голос пользователя (2000 позитивов)
-for _ in range(2000):
+# 1) Живой голос пользователя (2200 позитивов)
+for _ in range(2200):
     src = random.choice(user_snippets)
     aug = augment_sample(src, is_positive=True, is_user=True)
     X.append(compute_mel_spectrogram(aug))
@@ -423,7 +426,7 @@ def format_array(name, arr, is_int=True, per_line=16):
 
 header_content = f"""/*
  * wake_model_ey_gin.h — microWakeWord детектор «эй гин» для ESP32-S3 (INT8)
- * Обучен на живых записях станции (16 сэмплов) и мульти-голосах Piper.
+ * Обучен на живых записях станции (23 сэмпла) и мульти-голосах Piper.
  */
 
 #pragma once
