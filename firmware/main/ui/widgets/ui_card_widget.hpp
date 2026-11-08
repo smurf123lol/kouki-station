@@ -14,6 +14,7 @@ public:
     void show();
     void hide();
     void reset_scroll();
+    void stop_auto_scroll() { m_auto_scroll = false; }
     void step(uint32_t dt_ms);
 
     lv_obj_t* get_root() const { return m_card; }

@@ -18,17 +18,31 @@ static void on_tile_voice_clicked(lv_event_t* e)
 {
     auto* mgr = static_cast<UiStateManager*>(lv_event_get_user_data(e));
     if (mgr != nullptr) {
-        mgr->toggle_recording();
+        mgr->on_voice_tile_clicked();
     }
 }
 
 UiStateManager::UiStateManager() = default;
-UiStateManager::~UiStateManager() = default;
+UiStateManager::~UiStateManager()
+{
+    delete m_orb;
+    delete m_response_card;
+    delete m_history_tile;
+    delete m_settings_tile;
+    delete m_modal_screens;
+}
 
 UiStateManager& UiStateManager::instance()
 {
     static UiStateManager s_instance;
     return s_instance;
+}
+
+void UiStateManager::on_voice_tile_clicked()
+{
+    if (m_current_substate != nullptr) {
+        m_current_substate->on_tap(m_ctx);
+    }
 }
 
 void UiStateManager::init()

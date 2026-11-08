@@ -78,9 +78,16 @@ void HistoryTile::refresh()
     m_last_history_count = count;
 
     if (count == 0) {
+        m_last_top_transcript[0] = '\0';
         lv_obj_clear_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clean(m_list_container);
         return;
+    }
+
+    kouki_history_item_t top;
+    if (kouki_history_get(0, &top)) {
+        strncpy(m_last_top_transcript, top.transcript, sizeof(m_last_top_transcript) - 1);
+        m_last_top_transcript[sizeof(m_last_top_transcript) - 1] = '\0';
     }
 
     lv_obj_add_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -151,14 +158,29 @@ void HistoryTile::refresh()
 
 void HistoryTile::step(uint32_t dt_ms)
 {
-    // Проверка новых записей в истории
+    bool is_active = (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_HISTORY);
+    if (is_active && !m_was_active) {
+        refresh();
+    }
+    m_was_active = is_active;
+
+    // Проверка новых записей в истории (включая случай, когда буфер полон 10/10 и вытесняется элемент)
     size_t count = kouki_history_count();
-    if (count != m_last_history_count) {
+    bool need_refresh = (count != m_last_history_count);
+    if (!need_refresh && count > 0) {
+        kouki_history_item_t top;
+        if (kouki_history_get(0, &top)) {
+            if (strncmp(top.transcript, m_last_top_transcript, sizeof(m_last_top_transcript)) != 0) {
+                need_refresh = true;
+            }
+        }
+    }
+    if (need_refresh) {
         refresh();
     }
 
     // Автовозврат на главный экран через 20 секунд неактивности
-    if (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_HISTORY) {
+    if (is_active) {
         m_inactivity_ms += dt_ms;
         if (m_inactivity_ms >= 20000) {
             m_inactivity_ms = 0;

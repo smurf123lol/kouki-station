@@ -4,6 +4,14 @@
 
 namespace kouki::ui {
 
+static void on_card_pressed(lv_event_t* e)
+{
+    auto* card = static_cast<CardWidget*>(lv_event_get_user_data(e));
+    if (card != nullptr) {
+        card->stop_auto_scroll();
+    }
+}
+
 CardWidget::CardWidget(lv_obj_t* parent)
 {
     // Контейнер карточки шириной 280px, высотой 230px, по центру по горизонтали, y=65
@@ -21,6 +29,7 @@ CardWidget::CardWidget(lv_obj_t* parent)
     lv_obj_set_scroll_dir(m_card, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(m_card, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_flag(m_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(m_card, on_card_pressed, LV_EVENT_PRESSED, this);
 
     // Лейбл бейджа статуса
     m_badge_label = lv_label_create(m_card);
@@ -135,9 +144,14 @@ void CardWidget::reset_scroll()
 void CardWidget::step(uint32_t dt_ms)
 {
     if (m_auto_scroll) {
-        // Мягкий автоскролл со скоростью 20 px/сек
-        m_scroll_y += (20.0f * static_cast<float>(dt_ms)) / 1000.0f;
-        lv_obj_scroll_to_y(m_card, static_cast<lv_coord_t>(m_scroll_y), LV_ANIM_OFF);
+        lv_coord_t bottom = lv_obj_get_scroll_bottom(m_card);
+        if (bottom <= 0 && m_scroll_y > 10.0f) {
+            m_auto_scroll = false;
+        } else {
+            // Мягкий автоскролл со скоростью 20 px/сек
+            m_scroll_y += (20.0f * static_cast<float>(dt_ms)) / 1000.0f;
+            lv_obj_scroll_to_y(m_card, static_cast<lv_coord_t>(m_scroll_y), LV_ANIM_OFF);
+        }
     }
 }
 

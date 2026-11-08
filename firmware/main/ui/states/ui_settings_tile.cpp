@@ -30,6 +30,9 @@ static void on_volume_changed(lv_event_t* e)
     lv_obj_t* slider = lv_event_get_target(e);
     int32_t val = lv_slider_get_value(slider);
     esp_audio_set_play_vol(val);
+    if (tile != nullptr) {
+        tile->update_vol_label(val);
+    }
     ESP_LOGI(TAG, "громкость изменена: %ld%%", (long)val);
 }
 
@@ -56,6 +59,9 @@ static void on_wake_sens_changed(lv_event_t* e)
     int32_t val = lv_slider_get_value(slider);
     kouki_config_set_wake_threshold(static_cast<uint8_t>(val));
     kouki_config_save();
+    if (tile != nullptr) {
+        tile->update_wake_sens_label(val);
+    }
     ESP_LOGI(TAG, "чувствительность wake-word изменена: %ld%%", (long)val);
 }
 
@@ -68,6 +74,7 @@ static void on_silent_toggle(lv_event_t* e)
     lv_obj_t* sw = lv_event_get_target(e);
     bool silent = lv_obj_has_state(sw, LV_STATE_CHECKED);
     kouki_config_set_silent(silent);
+    kouki_config_save();
     ESP_LOGI(TAG, "режим тишины: %s", silent ? "вкл" : "выкл");
 }
 
@@ -243,6 +250,24 @@ SettingsTile::~SettingsTile()
     if (m_container != nullptr) {
         lv_obj_del(m_container);
         m_container = nullptr;
+    }
+}
+
+void SettingsTile::update_vol_label(int val)
+{
+    if (m_vol_label != nullptr) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Громкость: %d%%", val);
+        lv_label_set_text(m_vol_label, buf);
+    }
+}
+
+void SettingsTile::update_wake_sens_label(int val)
+{
+    if (m_wake_sens_label != nullptr) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "Чувствительность: %d%%", val);
+        lv_label_set_text(m_wake_sens_label, buf);
     }
 }
 

@@ -13,6 +13,7 @@ OrbWidget::OrbWidget(lv_obj_t* parent)
     lv_obj_set_style_border_width(m_container, 0, 0);
     lv_obj_set_style_pad_all(m_container, 0, 0);
     lv_obj_clear_flag(m_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(m_container, LV_OBJ_FLAG_CLICKABLE);
 
     // Wi-Fi точка вверху
     m_wifi_dot = lv_obj_create(m_container);

@@ -13,6 +13,8 @@ public:
 
     void refresh_wifi();
     void reset_inactivity();
+    void update_vol_label(int val);
+    void update_wake_sens_label(int val);
     void step(uint32_t dt_ms);
 
     lv_obj_t* get_root() const { return m_container; }

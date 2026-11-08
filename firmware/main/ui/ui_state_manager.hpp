@@ -27,6 +27,7 @@ public:
 
     TileId get_active_tile() const;
     void toggle_recording();
+    void on_voice_tile_clicked();
 
     void show_setup(const char* ssid, const char* url);
     void show_ota_progress(const char* text);

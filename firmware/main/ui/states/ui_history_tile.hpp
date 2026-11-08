@@ -25,6 +25,8 @@ private:
 
     uint32_t m_inactivity_ms{0};
     size_t m_last_history_count{0};
+    char m_last_top_transcript[192]{0};
+    bool m_was_active{false};
 };
 
 } // namespace kouki::ui
