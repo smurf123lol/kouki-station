@@ -340,6 +340,9 @@ static void handle_console_command(const char *cmd)
         char buf[512];
         kouki_config_format_masked(buf, sizeof(buf));
         printf("\n=== Текущие настройки ===\n%s\n", buf);
+        kouki_voice_print_state();
+    } else if (strcmp(cmd, "state") == 0) {
+        kouki_voice_print_state();
     } else if (strcmp(cmd, "help") == 0) {
         printf("\nКоманды консоли:\n"
                "  set_wifi <ssid> [pass]  — задать Wi-Fi (SSID и опциональный пароль)\n"
@@ -350,6 +353,7 @@ static void handle_console_command(const char *cmd)
                "  set_wake <0|1>          — включить/выключить wake-word «эй гин»\n"
                "  set_wake_th <10..95>    — порог срабатывания wake-word (по умолч. 75)\n"
                "  show                    — показать текущие настройки (секреты скрыты ***)\n"
+               "  state                   — показать статус голосового автомата (FSM)\n"
                "  save                    — сохранить настройки в NVS\n"
                "  reset                   — очистить настройки в NVS\n"
                "  record                  — начать голосовую запись (сессия TASK)\n"

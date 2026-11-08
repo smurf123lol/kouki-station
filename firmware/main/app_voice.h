@@ -12,7 +12,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef ESP_PLATFORM
 #include "esp_err.h"
+#else
+typedef int esp_err_t;
+#define ESP_OK 0
+#define ESP_FAIL -1
+#define ESP_ERR_NO_MEM 0x101
+#define ESP_ERR_INVALID_ARG 0x102
+#define ESP_ERR_INVALID_STATE 0x103
+#define ESP_ERR_TIMEOUT 0x107
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,6 +92,9 @@ bool kouki_voice_is_recording(void);
 
 /* Текущее состояние — для отрисовки из LVGL-таймера. */
 void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
+
+/* Диагностика FSM: печатает состояние, время, причину и статистику в консоль. */
+void kouki_voice_print_state(void);
 
 #ifdef __cplusplus
 }

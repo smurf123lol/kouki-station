@@ -6,6 +6,10 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define KOUKI_CONFIG_NVS_NAMESPACE "kouki_config"
 #define KOUKI_CONFIG_VERSION       1
 
@@ -100,5 +104,9 @@ esp_err_t kouki_config_erase(void);
  * Форматирует сводку конфигурации с маскированием секретов (SSID, пароль, токен маскируются ***).
  */
 void kouki_config_format_masked(char *buf, size_t max_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // APP_CONFIG_H
