@@ -36,6 +36,7 @@ static float *s_spectrogram = NULL;
 static float *s_norm_spec = NULL;
 static float *s_infer_arena = NULL;
 static int s_step_counter = 0;
+static int s_frames_collected = 0;
 static int16_t s_frame_peak[WAKE_MODEL_FRAMES];
 static int16_t s_step_peak = 0;
 
@@ -111,6 +112,7 @@ esp_err_t kouki_wake_init(void)
     memset(s_infer_arena, 0, WAKE_MODEL_ARENA_FLOATS * sizeof(float));
 
     s_step_counter = 0;
+    s_frames_collected = 0;
     s_initialized = true;
 
     uint8_t th = kouki_config_get_wake_threshold();
@@ -131,6 +133,7 @@ void kouki_wake_reset(void)
     s_step_counter = 0;
     s_consecutive_hits = 0;
     s_step_peak = 0;
+    s_frames_collected = 0;
     if (s_spectrogram) {
         for (int c = 0; c < TOTAL_CELLS; c++) {
             s_spectrogram[c] = -13.81551f;
@@ -260,13 +263,22 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
             memcpy(s_pcm_window + (FRAME_LEN - FRAME_STEP), s_step_buf, FRAME_STEP * sizeof(float));
 
             process_frame();
+            if (s_frames_collected < WAKE_MODEL_FRAMES) {
+                s_frames_collected++;
+            }
             s_step_counter++;
 
-            /* Инференс каждые 15 фреймов (каждые 150 мс) для оптимизации нагрузки CPU */
-            if (s_step_counter >= 15) {
+            /* Инференс каждые 10 фреймов (каждые 100 мс) для более отзывчивой реакции */
+            if (s_step_counter >= 10) {
                 s_step_counter = 0;
 
-                /* Двухуровневый энергетический фильтр: отсекает фоновый шум и тишину */
+                /* Не запускаем инференс, пока буфер не прогрелся полным окном (148 фреймов = 1.48 с) */
+                if (s_frames_collected < WAKE_MODEL_FRAMES) {
+                    s_consecutive_hits = 0;
+                    continue;
+                }
+
+                /* Энергетический фильтр: отсекает фоновый шум и тишину (пик речи >= 750) */
                 int16_t window_max = 0;
                 for (int f = 0; f < WAKE_MODEL_FRAMES; f++) {
                     if (s_frame_peak[f] > window_max) {
@@ -274,15 +286,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                     }
                 }
 
-                /* Пик в последних 200 мс (слог «гин») */
-                int16_t recent_max = 0;
-                for (int f = WAKE_MODEL_FRAMES - 20; f < WAKE_MODEL_FRAMES; f++) {
-                    if (s_frame_peak[f] > recent_max) {
-                        recent_max = s_frame_peak[f];
-                    }
-                }
-
-                if (window_max < 650 || recent_max < 350) {
+                if (window_max < 750) {
                     s_consecutive_hits = 0;
                     continue;
                 }

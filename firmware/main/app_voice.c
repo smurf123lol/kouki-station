@@ -390,8 +390,8 @@ static void idle_step(void)
         }
     }
 
-    /* Уступаем квант времени фоновым задачам и IDLE1 для предотвращения срабатывания task_wdt */
-    vTaskDelay(pdMS_TO_TICKS(15));
+    /* Уступаем минимальный квант времени фоновым задачам и IDLE1 без задержки I2S потока */
+    vTaskDelay(pdMS_TO_TICKS(2));
 }
 
 static void record_task(void *arg)
