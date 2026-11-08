@@ -18,6 +18,9 @@ esp_err_t kouki_wifi_connect(void);
 
 bool kouki_wifi_is_connected(void);
 
+/* Возвращает IP-адрес станции и RSSI (уровень сигнала в dBm). */
+esp_err_t kouki_wifi_get_info(char *ip_buf, size_t ip_len, int8_t *rssi);
+
 #ifdef __cplusplus
 }
 #endif

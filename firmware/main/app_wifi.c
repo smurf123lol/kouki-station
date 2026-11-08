@@ -113,3 +113,37 @@ bool kouki_wifi_is_connected(void)
 {
     return s_connected;
 }
+
+esp_err_t kouki_wifi_get_info(char *ip_buf, size_t ip_len, int8_t *rssi)
+{
+    if (!s_connected) {
+        if (ip_buf != NULL && ip_len > 0) {
+            ip_buf[0] = '\0';
+        }
+        if (rssi != NULL) {
+            *rssi = 0;
+        }
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (ip_buf != NULL && ip_len > 0) {
+        esp_netif_ip_info_t ip_info;
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif != NULL && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+            esp_ip4addr_ntoa(&ip_info.ip, ip_buf, ip_len);
+        } else {
+            ip_buf[0] = '\0';
+        }
+    }
+
+    if (rssi != NULL) {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            *rssi = ap_info.rssi;
+        } else {
+            *rssi = 0;
+        }
+    }
+
+    return ESP_OK;
+}

@@ -31,7 +31,8 @@ static bool s_verify_timeout_logged = false;
 static volatile bool s_is_updating = false;
 static TaskHandle_t s_ota_task_handle = NULL;
 static EventGroupHandle_t s_ota_event_group = NULL;
-#define OTA_START_BIT BIT0
+#define OTA_START_BIT     BIT0
+#define OTA_CHECK_NOW_BIT BIT1
 
 /* Контекст для вычисления sha256 и отслеживания загрузки */
 typedef struct {
@@ -393,9 +394,13 @@ static void ota_task(void *arg)
             interval_s = KOUKI_CONFIG_DEFAULT_OTA_INTERVAL;
         }
 
-        /* Спим секундами, проверяя таймаут PENDING_VERIFY */
+        /* Спим секундами, проверяя сигнал немедленной проверки и таймаут PENDING_VERIFY */
         for (uint32_t s = 0; s < interval_s; s++) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            EventBits_t b = xEventGroupWaitBits(s_ota_event_group, OTA_CHECK_NOW_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(1000));
+            if (b & OTA_CHECK_NOW_BIT) {
+                ESP_LOGI(TAG, "запрошена внеочередная проверка OTA");
+                break;
+            }
 
             if (s_pending_verify && !s_verify_timeout_logged) {
                 if ((xTaskGetTickCount() - s_verify_start_tick) >= pdMS_TO_TICKS(60000)) {
@@ -441,5 +446,12 @@ void kouki_ota_start(void)
 {
     if (s_ota_event_group != NULL) {
         xEventGroupSetBits(s_ota_event_group, OTA_START_BIT);
+    }
+}
+
+void kouki_ota_check_now(void)
+{
+    if (s_ota_event_group != NULL) {
+        xEventGroupSetBits(s_ota_event_group, OTA_CHECK_NOW_BIT);
     }
 }
