@@ -119,9 +119,9 @@ for fpath in station_files:
     r = c.fetchall()
     txt = r[0][0] if r else ""
     t_low = txt.lower()
-    if "родина" in t_low or "один" in t_low or "сегодня" in t_low:
+    if any(w in t_low for w in ["родина", "один", "сегодня", "дим", "майс", "раз", "дарова", "дорога"]):
         continue
-    if any(k in t_low for k in ['гин', 'гим', 'гил', 'дин']) or ('эй' in t_low):
+    if any(k in t_low for k in ['гин', 'гим', 'гил', 'дин']):
         pos_files.append((fname, fpath))
 conn.close()
 
@@ -155,7 +155,7 @@ for f in negative_station_files:
     try:
         with wave.open(f, "rb") as w:
             pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        is_hard = any(k in f for k in ["190939", "095610", "102439", "102455", "101815", "101838"])
+        is_hard = any(k in f for k in ["190939", "095610", "102439", "102455", "101815", "101838", "105624", "105727", "105744", "110111", "110554"])
         step = int(0.08 * SAMPLE_RATE) if is_hard else int(0.10 * SAMPLE_RATE)
         for i in range(0, len(pcm) - TOTAL_SAMPLES, step):
             sl = pcm[i:i + TOTAL_SAMPLES]
@@ -175,7 +175,7 @@ print(f"Собрано {len(room_noises)} фрагментов комнатно�
 print("[3] Синтез мульти-голосов Piper...")
 piper_voices = [None, "ru_RU-dmitri-medium", "ru_RU-denis-medium"]
 piper_positives = []
-pos_texts = ["эй гин", "Эй, гин", "эй гин!", "эйгин", "эй, гин.", "эй, дин", "эй, гим"]
+pos_texts = ["эй гин", "Эй, гин", "эй гин!", "эйгин", "эй, гин.", "эй, гим"]
 for v in piper_voices:
     for t in pos_texts:
         pcm = synthesize_audio(t, voice=v)
@@ -188,7 +188,8 @@ neg_texts = [
     "эй", "гин", "эти", "игры", "один", "деньги", "книги", "режим",
     "да", "нет", "стоп", "включи", "выключи", "смешка", "нормально",
     "странно работает", "я не понимаю", "что делаешь", "сколько времени",
-    "проверяйте", "запиши и проверяйте", "алиса", "яндекс", "сири", "здорово"
+    "проверяйте", "запиши и проверяйте", "алиса", "яндекс", "сири", "здорово",
+    "эй дим", "эй тим", "эй рим", "рейдим", "майс", "дарова", "раз два три", "дорога"
 ]
 for v in piper_voices:
     for t in neg_texts:
@@ -367,6 +368,8 @@ def quantize_int8(tensor):
     scale = max_val / 127.0
     q = np.clip(np.round(t / scale), -127, 127).astype(np.int8)
     return q, float(scale)
+
+torch.save(model.state_dict(), '/srv/kouki-workspace/_scratch/best_wake_model.pt')
 
 # Merge BN into Conv
 w1 = model.conv1.weight.detach().cpu()

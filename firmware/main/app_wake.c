@@ -310,9 +310,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                 float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
 
                 bool hit = false;
-                if (prob >= 0.85f) {
-                    hit = true;
-                } else if (prob >= threshold) {
+                if (prob >= threshold) {
                     s_consecutive_hits++;
                     if (s_consecutive_hits >= 2) {
                         hit = true;
