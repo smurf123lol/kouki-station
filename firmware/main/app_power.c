@@ -7,13 +7,20 @@
 #include "ST77916.h"
 #include "esp_log.h"
 #include "app_voice.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "kouki.power";
+static SemaphoreHandle_t s_power_mutex = NULL;
+#define POWER_LOCK()   do { if (s_power_mutex) xSemaphoreTake(s_power_mutex, portMAX_DELAY); } while(0)
+#define POWER_UNLOCK() do { if (s_power_mutex) xSemaphoreGive(s_power_mutex); } while(0)
 #else
 // Для тестов на хосте объявляем слабую функцию Set_Backlight
 __attribute__((weak)) void Set_Backlight(uint8_t Light) {
     (void)Light;
 }
+#define POWER_LOCK()   do {} while(0)
+#define POWER_UNLOCK() do {} while(0)
 #endif
 
 static uint32_t s_idle_ms = 0;
@@ -23,11 +30,19 @@ static uint8_t s_applied_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
 
 void kouki_power_init(void)
 {
+#ifdef ESP_PLATFORM
+    if (!s_power_mutex) {
+        s_power_mutex = xSemaphoreCreateMutex();
+    }
+#endif
+    POWER_LOCK();
     s_idle_ms = 0;
     s_current_brightness = (float)KOUKI_POWER_BRIGHTNESS_ACTIVE;
     s_target_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
     s_applied_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
     Set_Backlight(s_applied_brightness);
+    POWER_UNLOCK();
+
 #ifdef ESP_PLATFORM
     ESP_LOGI(TAG, "Диспетчер питания инициализирован (100%% яркости)");
 #endif
@@ -35,22 +50,25 @@ void kouki_power_init(void)
 
 void kouki_power_notify_activity(void)
 {
+    POWER_LOCK();
     s_idle_ms = 0;
     s_target_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
     s_current_brightness = (float)KOUKI_POWER_BRIGHTNESS_ACTIVE;
-    if (s_applied_brightness != KOUKI_POWER_BRIGHTNESS_ACTIVE) {
-        s_applied_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
-        Set_Backlight(s_applied_brightness);
+    uint8_t prev = s_applied_brightness;
+    s_applied_brightness = KOUKI_POWER_BRIGHTNESS_ACTIVE;
+    if (prev != KOUKI_POWER_BRIGHTNESS_ACTIVE) {
+        Set_Backlight(KOUKI_POWER_BRIGHTNESS_ACTIVE);
 #ifdef ESP_PLATFORM
         ESP_LOGD(TAG, "Активность: яркость восстановлена до 100%%");
 #endif
     }
+    POWER_UNLOCK();
 }
 
 void kouki_power_tick(uint32_t dt_ms)
 {
 #ifdef ESP_PLATFORM
-    // Если станция не в покое (запись, отправка, озвучивание), считаем её активной
+    // Проверка состояния FSM выполняется ДО захвата s_power_mutex во избежание взаимных блокировок
     kouki_voice_state_t vstate = KOUKI_VOICE_IDLE;
     kouki_voice_get_snapshot(&vstate, NULL);
     if (vstate != KOUKI_VOICE_IDLE) {
@@ -59,7 +77,12 @@ void kouki_power_tick(uint32_t dt_ms)
     }
 #endif
 
-    s_idle_ms += dt_ms;
+    POWER_LOCK();
+
+    // Защита от переполнения uint32 при длительном бездействии (> 49 суток)
+    if (s_idle_ms < (KOUKI_POWER_IDLE_OFF_MS + 5000)) {
+        s_idle_ms += dt_ms;
+    }
 
     uint32_t fade_duration_ms = KOUKI_POWER_FADE_WAKE_MS;
 
@@ -98,14 +121,22 @@ void kouki_power_tick(uint32_t dt_ms)
             Set_Backlight(s_applied_brightness);
         }
     }
+
+    POWER_UNLOCK();
 }
 
 uint8_t kouki_power_get_brightness(void)
 {
-    return s_applied_brightness;
+    POWER_LOCK();
+    uint8_t b = s_applied_brightness;
+    POWER_UNLOCK();
+    return b;
 }
 
 uint32_t kouki_power_get_idle_ms(void)
 {
-    return s_idle_ms;
+    POWER_LOCK();
+    uint32_t idle = s_idle_ms;
+    POWER_UNLOCK();
+    return idle;
 }

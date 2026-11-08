@@ -14,6 +14,9 @@ namespace kouki::voice {
 void RecordingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     ctx.reset_recording();
     ctx.result = {};
+    if (ctx.dialogue_continue) {
+        ctx.speech_detected = true;
+    }
 
 #ifdef ESP_PLATFORM
     kouki_power_notify_activity();
@@ -60,6 +63,7 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
 
     if (ctx.dialogue_continue) {
         if (is_loud) {
+            ctx.speech_detected = true;
             ctx.followup_silence_chunks = 0;
             ctx.last_vad_silence_ms = 0;
         } else {

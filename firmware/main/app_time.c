@@ -91,6 +91,8 @@ esp_err_t kouki_time_init(const char *tz_str)
     return ESP_OK;
 }
 
+#define KOUKI_TIME_EPOCH_THRESHOLD 1700000000LL
+
 bool kouki_time_is_synced(void)
 {
     if (s_time_synced) {
@@ -104,8 +106,7 @@ bool kouki_time_is_synced(void)
 #endif
     time_t now = 0;
     time(&now);
-    // 1700000000 = ~Nov 2023 (epoch validation threshold)
-    if (now > 1700000000) {
+    if ((long long)now > KOUKI_TIME_EPOCH_THRESHOLD) {
         s_time_synced = true;
         return true;
     }
