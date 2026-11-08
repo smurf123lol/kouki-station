@@ -14,7 +14,14 @@ idf_component_register(
         "./fsm/states/done_state.cpp"
         "./fsm/states/followup_state.cpp"
         "./fsm/states/error_state.cpp"
-        "./app_ui.c"
+        "./app_ui.cpp"
+        "./ui/ui_state_manager.cpp"
+        "./ui/widgets/ui_orb_widget.cpp"
+        "./ui/widgets/ui_card_widget.cpp"
+        "./ui/states/ui_voice_substates.cpp"
+        "./ui/states/ui_history_tile.cpp"
+        "./ui/states/ui_settings_tile.cpp"
+        "./ui/states/ui_modal_screens.cpp"
         "./app_wake.c"
         "./app_tone.c"
         "./app_speech.c"
@@ -43,6 +50,8 @@ idf_component_register(
         "./drivers/touch/esp_lcd_touch"
         "./drivers/lvgl"
         "./ui"
+        "./ui/widgets"
+        "./ui/states"
     REQUIRES
         app_update
         esp_https_ota

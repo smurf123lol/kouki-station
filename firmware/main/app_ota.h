@@ -31,6 +31,11 @@ esp_err_t kouki_ota_init(void);
 void kouki_ota_start(void);
 
 /**
+ * Инициирует немедленную проверку наличия обновлений на сервере (например, по кнопке в UI).
+ */
+void kouki_ota_check_now(void);
+
+/**
  * Уведомляет модуль OTA об успешном обмене с сервером (HTTP/HTTPS).
  * Если текущий образ запущен в режиме PENDING_VERIFY, подтверждает
  * валидность образа вызовом esp_ota_mark_app_valid_cancel_rollback().
