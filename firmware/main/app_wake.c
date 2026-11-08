@@ -309,17 +309,24 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
 
                 float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
 
-                if (prob >= threshold) {
+                bool hit = false;
+                if (prob >= 0.85f) {
+                    hit = true;
+                } else if (prob >= threshold) {
                     s_consecutive_hits++;
                     if (s_consecutive_hits >= 2) {
-                        ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
-                                 (double)prob, (double)threshold);
-                        detected = true;
-                        s_consecutive_hits = 0;
-                        kouki_wake_reset();
+                        hit = true;
                     }
                 } else {
                     s_consecutive_hits = 0;
+                }
+
+                if (hit) {
+                    ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f (порог NVS=%.2f)",
+                             (double)prob, (double)threshold);
+                    detected = true;
+                    s_consecutive_hits = 0;
+                    kouki_wake_reset();
                 }
             }
         }
