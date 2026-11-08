@@ -232,7 +232,8 @@ static esp_err_t record_chunk(void)
     s_sample_bytes += bytes;
 
     if (s_dialogue_continue) {
-        if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+        const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE * 3) / 2;
+        if (is_chunk_loud(mono, RECORD_CHUNK, speech_chunk_th)) {
             s_followup_silence_chunks = 0;
         } else {
             s_followup_silence_chunks++;
@@ -320,7 +321,24 @@ static void followup_step(void)
         return;
     }
 
-    if (is_chunk_loud(mono, RECORD_CHUNK, CONFIG_KOUKI_MIN_AMPLITUDE)) {
+    /* В окне продолжения также проверяем wake-word: если человек сказал «эй гин»,
+     * начинаем чистую новую wake-сессию вместо продолжения старого вопроса */
+    if (kouki_wake_is_ready() && kouki_wake_feed(mono, RECORD_CHUNK)) {
+        ESP_LOGI(TAG, "в окне продолжения услышали кодовое слово (%s): новая wake-сессия",
+                 kouki_wake_model());
+        s_dialogue_continue = false;
+        if (start_recording_internal(KOUKI_TONE_WAKE) == ESP_OK) {
+            s_wake_recording = true;
+            s_wake_speech_detected = false;
+            s_wake_silence_chunks = 0;
+            s_wake_cancelled = false;
+            s_wake_stop_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_MAX_RECORD_S * 1000);
+        }
+        return;
+    }
+
+    const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE * 3) / 2;
+    if (is_chunk_loud(mono, RECORD_CHUNK, speech_chunk_th)) {
         ESP_LOGI(TAG, "в окне продолжения услышали речь: начинаю запись продолжения");
         s_session = KOUKI_SESSION_ASK;
         s_dialogue_continue = true;
@@ -412,16 +430,19 @@ static void record_task(void *arg)
         }
 
         /*
-         * Микрофон слушает wake-word ТОЛЬКО когда станция полностью в покое:
-         * не отправляет HTTP, не говорит через динамик и не начинает старт.
+         * Если станция занята отправкой HTTP, стартом или динамик воспроизводит речь/тон —
+         * микрофон не слушает wake-word во избежание самовозбуждения.
          */
-        if (cur_state == KOUKI_VOICE_IDLE && !kouki_speech_is_playing() && !kouki_speech_busy() && !s_starting) {
-            idle_step();
+        if (cur_state == KOUKI_VOICE_SENDING || kouki_speech_is_playing() || kouki_speech_busy() || s_starting) {
+            vTaskDelay(pdMS_TO_TICKS(30));
             continue;
         }
 
-        /* Во всех промежуточных состояниях (SENDING, DONE, воспроизведение речи) уступаем CPU */
-        vTaskDelay(pdMS_TO_TICKS(30));
+        /*
+         * Во всех остальных состояниях покоя (IDLE, DONE, ERROR):
+         * станция ждёт либо нажатия кнопки, либо wake-word «эй гин».
+         */
+        idle_step();
     }
 }
 
@@ -454,6 +475,8 @@ static void finish_recording(void)
         s_dialogue_continue = false;
         copy_str(result.error, sizeof(result.error), "Тишина: ничего не записалось");
         publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        publish(KOUKI_VOICE_IDLE, &result);
         return;
     }
 
@@ -463,6 +486,8 @@ static void finish_recording(void)
         s_dialogue_continue = false;
         copy_str(result.error, sizeof(result.error), "Тишина: слишком тихо, повторите ближе к микрофону");
         publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        publish(KOUKI_VOICE_IDLE, &result);
         return;
     }
 
@@ -480,6 +505,8 @@ static void finish_recording(void)
     if (xTaskCreate(send_task, "kouki.send", 8192, NULL, 5, NULL) != pdPASS) {
         copy_str(result.error, sizeof(result.error), "Не удалось запустить отправку");
         publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        publish(KOUKI_VOICE_IDLE, &result);
     }
 }
 
@@ -704,6 +731,8 @@ static void send_task(void *arg)
     if (!kouki_wifi_is_connected()) {
         copy_str(result.error, sizeof(result.error), "Нет сети");
         publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        publish(KOUKI_VOICE_IDLE, &result);
         vTaskDelete(NULL);
         return;
     }
@@ -734,6 +763,8 @@ static void send_task(void *arg)
         ESP_LOGW(TAG, "ответ сервера (HTTP %d, err=%s): %.160s (текст: %s)",
                  result.http_status, esp_err_to_name(err), response, result.error);
         publish(KOUKI_VOICE_ERROR, &result);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        publish(KOUKI_VOICE_IDLE, &result);
         vTaskDelete(NULL);
         return;
     }
@@ -741,41 +772,47 @@ static void send_task(void *arg)
     parse_response(response, &result);
     if (result.error[0] != '\0') {
         publish(KOUKI_VOICE_ERROR, &result);
+        if (result.answer[0] != '\0') {
+            kouki_speech_play(result.answer);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        publish(KOUKI_VOICE_IDLE, &result);
     } else {
         publish(KOUKI_VOICE_DONE, &result);
-    }
-
-    /*
-     * Голос — после экрана: ответ человек видит сразу, а речь идёт следом.
-     * Задача отправки уже ничего не держит, кроме себя, поэтому блокирующее
-     * воспроизведение живёт здесь и не мешает UI. Запись на это время
-     * откладывается (см. start_recording_internal).
-     */
-    if (result.error[0] == '\0' && result.answer[0] != '\0') {
-        kouki_speech_play(result.answer);
 
         /*
-         * T88/T73: окно продолжения диалога после озвучивания ответа.
-         * Открывается для вопросов (ask) или при запросе подтверждения (requiresConfirmation).
-         * Для обычной задачи сразу переходим в IDLE (если не включен KOUKI_FOLLOWUP_TASK_ENABLED).
+         * Голос — после экрана: ответ человек видит сразу, а речь идёт следом.
+         * Задача отправки уже ничего не держит, кроме себя, поэтому блокирующее
+         * воспроизведение живёт здесь и не мешает UI. Запись на это время
+         * откладывается (см. start_recording_internal).
          */
-        bool enable_followup = (strcmp(result.intent, "ask") == 0) ||
-                               result.requires_confirmation
-#if CONFIG_KOUKI_FOLLOWUP_TASK_ENABLED
-                               || true
-#endif
-                               ;
+        if (result.answer[0] != '\0') {
+            kouki_speech_play(result.answer);
 
-        if (enable_followup && kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
-            s_followup_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
-            s_dialogue_continue = false;
-            ESP_LOGI(TAG, "открываю окно продолжения диалога на %d мс", CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
-            publish(KOUKI_VOICE_FOLLOWUP, &result);
+            /*
+             * T88/T73: окно продолжения диалога после озвучивания ответа.
+             * Открывается для вопросов (ask) или при запросе подтверждения (requiresConfirmation).
+             * Для обычной задачи сразу переходим в IDLE (если не включен KOUKI_FOLLOWUP_TASK_ENABLED).
+             */
+            bool enable_followup = (strcmp(result.intent, "ask") == 0) ||
+                                   result.requires_confirmation
+#if CONFIG_KOUKI_FOLLOWUP_TASK_ENABLED
+                                   || true
+#endif
+                                   ;
+
+            if (enable_followup && kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
+                s_followup_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
+                s_dialogue_continue = false;
+                ESP_LOGI(TAG, "открываю окно продолжения диалога на %d мс", CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
+                publish(KOUKI_VOICE_FOLLOWUP, &result);
+            } else {
+                publish(KOUKI_VOICE_IDLE, &result);
+            }
         } else {
             publish(KOUKI_VOICE_IDLE, &result);
         }
-    } else if (result.error[0] == '\0') {
-        publish(KOUKI_VOICE_IDLE, &result);
     }
 
     /* Итог отправки нужен в логе: на экране платы он виден не всегда. */
