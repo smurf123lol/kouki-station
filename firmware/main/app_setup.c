@@ -348,7 +348,7 @@ static void handle_console_command(const char *cmd)
                "  set_source <source>     — задать метку источника (по умолчанию 'station')\n"
                "  set_silent <0|1>        — включить/выключить режим тишины (без голоса)\n"
                "  set_wake <0|1>          — включить/выключить wake-word «эй гин»\n"
-               "  set_wake_th <10..95>    — порог срабатывания wake-word (по умолч. 60)\n"
+               "  set_wake_th <10..95>    — порог срабатывания wake-word (по умолч. 75)\n"
                "  show                    — показать текущие настройки (секреты скрыты ***)\n"
                "  save                    — сохранить настройки в NVS\n"
                "  reset                   — очистить настройки в NVS\n"

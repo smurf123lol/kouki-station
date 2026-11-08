@@ -36,6 +36,8 @@ static float *s_spectrogram = NULL;
 static float *s_norm_spec = NULL;
 static float *s_infer_arena = NULL;
 static int s_step_counter = 0;
+static int16_t s_frame_peak[WAKE_MODEL_FRAMES];
+static int16_t s_step_peak = 0;
 
 esp_err_t kouki_wake_init(void)
 {
@@ -71,7 +73,11 @@ esp_err_t kouki_wake_init(void)
         s_fft = NULL;
         return ESP_ERR_NO_MEM;
     }
-    memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
+    for (int c = 0; c < TOTAL_CELLS; c++) {
+        s_spectrogram[c] = -13.81551f;
+    }
+    memset(s_frame_peak, 0, sizeof(s_frame_peak));
+    s_step_peak = 0;
 
     /* Буфер нормализованной спектрограммы для инференса */
     s_norm_spec = (float *)heap_caps_malloc(TOTAL_CELLS * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -124,10 +130,14 @@ void kouki_wake_reset(void)
     s_step_buf_len = 0;
     s_step_counter = 0;
     s_consecutive_hits = 0;
+    s_step_peak = 0;
     if (s_spectrogram) {
-        memset(s_spectrogram, 0, TOTAL_CELLS * sizeof(float));
+        for (int c = 0; c < TOTAL_CELLS; c++) {
+            s_spectrogram[c] = -13.81551f;
+        }
     }
     memset(s_pcm_window, 0, sizeof(s_pcm_window));
+    memset(s_frame_peak, 0, sizeof(s_frame_peak));
 }
 
 void kouki_wake_mute(int duration_ms)
@@ -229,10 +239,21 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
     const float threshold = (float)kouki_config_get_wake_threshold() / 100.0f;
 
     for (int i = 0; i < samples; i++) {
-        s_step_buf[s_step_buf_len++] = (float)pcm[i] / 32768.0f;
+        int16_t val = pcm[i];
+        int16_t abs_val = (val < 0) ? -val : val;
+        if (abs_val > s_step_peak) {
+            s_step_peak = abs_val;
+        }
+
+        s_step_buf[s_step_buf_len++] = (float)val / 32768.0f;
 
         if (s_step_buf_len >= FRAME_STEP) {
             s_step_buf_len = 0;
+
+            /* Сохраняем пиковую амплитуду за шаг 160 сэмплов */
+            memmove(s_frame_peak, s_frame_peak + 1, (WAKE_MODEL_FRAMES - 1) * sizeof(int16_t));
+            s_frame_peak[WAKE_MODEL_FRAMES - 1] = s_step_peak;
+            s_step_peak = 0;
 
             /* Блочный сдвиг окна PCM на FRAME_STEP сэмплов */
             memmove(s_pcm_window, s_pcm_window + FRAME_STEP, (FRAME_LEN - FRAME_STEP) * sizeof(float));
@@ -244,6 +265,27 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
             /* Инференс каждые 15 фреймов (каждые 150 мс) для оптимизации нагрузки CPU */
             if (s_step_counter >= 15) {
                 s_step_counter = 0;
+
+                /* Двухуровневый энергетический фильтр: отсекает фоновый шум и тишину */
+                int16_t window_max = 0;
+                for (int f = 0; f < WAKE_MODEL_FRAMES; f++) {
+                    if (s_frame_peak[f] > window_max) {
+                        window_max = s_frame_peak[f];
+                    }
+                }
+
+                /* Пик в последних 200 мс (слог «гин») */
+                int16_t recent_max = 0;
+                for (int f = WAKE_MODEL_FRAMES - 20; f < WAKE_MODEL_FRAMES; f++) {
+                    if (s_frame_peak[f] > recent_max) {
+                        recent_max = s_frame_peak[f];
+                    }
+                }
+
+                if (window_max < 650 || recent_max < 350) {
+                    s_consecutive_hits = 0;
+                    continue;
+                }
 
                 /* Стандартизация спектрограммы (mean 0, std 1) */
                 float sum = 0.0f;
@@ -265,7 +307,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
 
                 if (prob >= threshold) {
                     s_consecutive_hits++;
-                    if (s_consecutive_hits >= 3) {
+                    if (s_consecutive_hits >= 2) {
                         ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f >= %.2f (порог NVS)",
                                  (double)prob, (double)threshold);
                         detected = true;

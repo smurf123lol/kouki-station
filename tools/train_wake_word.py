@@ -20,6 +20,7 @@ import time
 import struct
 import random
 import io
+import glob
 import urllib.request
 import numpy as np
 from scipy import signal
@@ -123,13 +124,53 @@ def compute_mel_spectrogram(pcm):
     std = np.std(spectrogram) + 1e-6
     return (spectrogram - mean) / std
 
-def augment_sample(pcm, is_positive=True):
+def generate_pink_noise(n_samples):
+    white = np.random.normal(0, 1, n_samples).astype(np.float32)
+    fft_vals = np.fft.rfft(white)
+    freqs = np.fft.rfftfreq(n_samples, d=1.0 / SAMPLE_RATE)
+    freqs[0] = 1.0
+    alpha = random.uniform(0.7, 1.6)
+    filter_curve = 1.0 / (freqs ** (alpha / 2.0))
+    pink_fft = fft_vals * filter_curve
+    pink = np.fft.irfft(pink_fft, n=n_samples)
+    scale = np.max(np.abs(pink)) + 1e-6
+    amp = random.uniform(0.003, 0.05)
+    return (pink / scale * amp).astype(np.float32)
+
+def generate_hum(n_samples):
+    t = np.arange(n_samples) / float(SAMPLE_RATE)
+    f0 = random.choice([50.0, 100.0])
+    amp = random.uniform(0.002, 0.03)
+    hum = np.sin(2 * np.pi * f0 * t) * amp
+    hum += np.sin(2 * np.pi * (2 * f0) * t) * (amp * 0.4)
+    hum += generate_pink_noise(n_samples) * 0.5
+    return hum.astype(np.float32)
+
+def load_station_noises():
+    slices = []
+    files = glob.glob("/var/lib/kouki/audio/station/20261108/*.wav")
+    for f in files:
+        try:
+            with wave.open(f, "rb") as w:
+                n = w.getnframes()
+                raw = w.readframes(n)
+                pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                if len(pcm) >= TOTAL_SAMPLES:
+                    for pos in range(0, len(pcm) - TOTAL_SAMPLES, TOTAL_SAMPLES // 2):
+                        slices.append(pcm[pos:pos + TOTAL_SAMPLES])
+        except Exception:
+            pass
+    if slices:
+        print(f"  Загружено реальных нарезков шума со станции: {len(slices)}")
+    return slices
+
+def augment_sample(pcm, is_positive=True, station_noises=None):
     """Аугментация аудио."""
     if pcm is None or len(pcm) == 0:
         return np.zeros(TOTAL_SAMPLES, dtype=np.float32)
 
-    # Скорость (0.85x .. 1.2x)
-    speed = random.uniform(0.85, 1.2)
+    # Скорость (0.85x .. 1.15x)
+    speed = random.uniform(0.85, 1.15)
     new_len = int(len(pcm) / speed)
     if new_len > 100:
         pcm_aug = signal.resample(pcm, new_len)
@@ -137,7 +178,7 @@ def augment_sample(pcm, is_positive=True):
         pcm_aug = pcm.copy()
 
     # Громкость
-    gain = random.uniform(0.4, 1.4)
+    gain = random.uniform(0.5, 1.3)
     pcm_aug = pcm_aug * gain
 
     # Случайный сдвиг в окне
@@ -149,13 +190,21 @@ def augment_sample(pcm, is_positive=True):
     else:
         out = pcm_aug[:TOTAL_SAMPLES]
 
-    # Добавление шума
-    snr_db = random.uniform(12.0, 30.0)
-    signal_power = np.mean(out ** 2) + 1e-9
-    noise_power = signal_power / (10.0 ** (snr_db / 10.0))
-    noise = np.random.normal(0, np.sqrt(noise_power), TOTAL_SAMPLES).astype(np.float32)
-    out = out + noise
+    # Добавление разнообразного фонового шума
+    noise_choice = random.random()
+    if station_noises and noise_choice < 0.40:
+        noise = random.choice(station_noises) * random.uniform(0.6, 1.5)
+    elif noise_choice < 0.70:
+        noise = generate_pink_noise(TOTAL_SAMPLES)
+    elif noise_choice < 0.85:
+        noise = generate_hum(TOTAL_SAMPLES)
+    else:
+        snr_db = random.uniform(14.0, 30.0)
+        signal_power = np.mean(out ** 2) + 1e-9
+        noise_power = signal_power / (10.0 ** (snr_db / 10.0))
+        noise = np.random.normal(0, np.sqrt(noise_power), TOTAL_SAMPLES).astype(np.float32)
 
+    out = out + noise
     return np.clip(out, -1.0, 1.0)
 
 def generate_dataset():
@@ -166,7 +215,7 @@ def generate_dataset():
         "эй гин", "эй, гин", "эй гин!", "эй гин?",
         "эй, гин!", "эй гин.", "эй, гин?"
     ]
-    voices = [None, "denis", "dmitri"]
+    voices = [None, "ru_RU-denis-medium", "ru_RU-dmitri-medium"]
 
     base_positives = []
     for txt in positive_texts:
@@ -178,13 +227,17 @@ def generate_dataset():
     print(f"  Получено базовых позитивов: {len(base_positives)}")
 
     negative_texts = [
+        # Системные фразы станции
+        "команда не зарегистрирована", "задача создана", "слушаю", "секунду", "ошибка сети",
+        # Обычные фразы
         "привет", "как дела", "погода сегодня", "включи свет", "музыка",
         "стоп", "отмена", "спасибо", "ладно", "хорошо", "ассистент",
         "станция", "выключи", "сделай тише", "громче", "купить хлеб",
         "запиши задачу", "раз два три", "четыре пять",
         # Созвучные слова (hard negatives)
         "эй", "гин", "эй ты", "один", "блин", "пингвин", "магазин",
-        "эй там", "почин", "кувшин", "аршин", "жасмин", "павлин"
+        "эй там", "почин", "кувшин", "аршин", "жасмин", "павлин",
+        "апельсин", "бензин", "рубин"
     ]
 
     base_negatives = []
@@ -196,27 +249,45 @@ def generate_dataset():
 
     print(f"  Получено базовых негативов: {len(base_negatives)}")
 
-    print("[2/5] Генерация и аугментация корпуса (1500 позитивов, 1500 негативов)...")
+    station_noises = load_station_noises()
+
+    print("[2/5] Генерация и аугментация корпуса (2000 позитивов, 2500 негативов)...")
     X = []
     y = []
 
-    # 1500 позитивов
-    for _ in range(1500):
+    # 2000 позитивов
+    for _ in range(2000):
         src = random.choice(base_positives)
-        aug_pcm = augment_sample(src, is_positive=True)
+        aug_pcm = augment_sample(src, is_positive=True, station_noises=station_noises)
         spec = compute_mel_spectrogram(aug_pcm)
         X.append(spec)
         y.append(1.0)
 
-    # 1500 негативов
-    for _ in range(1500):
-        if random.random() < 0.15:
-            noise = np.random.normal(0, random.uniform(0.001, 0.05), TOTAL_SAMPLES).astype(np.float32)
+    # 2500 негативов
+    for _ in range(2500):
+        r = random.random()
+        if r < 0.40:
+            # Негативная речь
+            src = random.choice(base_negatives)
+            aug_pcm = augment_sample(src, is_positive=False, station_noises=station_noises)
+            spec = compute_mel_spectrogram(aug_pcm)
+        elif r < 0.65 and station_noises:
+            # Чистый фоновый шум станции
+            noise = random.choice(station_noises) * random.uniform(0.5, 2.0)
+            spec = compute_mel_spectrogram(noise)
+        elif r < 0.85:
+            # Розовый шум
+            noise = generate_pink_noise(TOTAL_SAMPLES)
+            spec = compute_mel_spectrogram(noise)
+        elif r < 0.95:
+            # 50Hz/100Hz гул
+            noise = generate_hum(TOTAL_SAMPLES)
             spec = compute_mel_spectrogram(noise)
         else:
-            src = random.choice(base_negatives)
-            aug_pcm = augment_sample(src, is_positive=False)
-            spec = compute_mel_spectrogram(aug_pcm)
+            # Тишина / почти ноль
+            noise = np.random.normal(0, random.uniform(0.0001, 0.002), TOTAL_SAMPLES).astype(np.float32)
+            spec = compute_mel_spectrogram(noise)
+
         X.append(spec)
         y.append(0.0)
 
@@ -228,7 +299,7 @@ def generate_dataset():
     y = y[perm]
 
     print(f"  Всего сэмплов: {len(X)}, форма входа: {X[0].shape}")
-    return X, y
+    return X, y, base_positives, station_noises
 
 # Архитектура microWakeWord на PyTorch
 class MicroWakeWordModel(nn.Module):
@@ -295,7 +366,7 @@ def train_and_export_model(X, y, output_header_path):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     best_acc = 0.0
-    epochs = 15
+    epochs = 18
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -591,7 +662,7 @@ static inline float wake_model_ey_gin_infer(const float *spec, float *arena)
 
 def main():
     header_path = sys.argv[1] if len(sys.argv) > 1 else "firmware/main/wake_model_ey_gin.h"
-    X, y = generate_dataset()
+    X, y, _, _ = generate_dataset()
     train_and_export_model(X, y, header_path)
 
 if __name__ == "__main__":
