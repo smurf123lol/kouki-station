@@ -90,8 +90,20 @@ void kouki_voice_debug_levels(void);
 
 bool kouki_voice_is_recording(void);
 
+/* Метрики VAD и записи для динамической индикации в UI (T114 / T115). */
+typedef struct {
+    bool is_recording;
+    bool speech_detected;      /* началась ли фактическая речь */
+    uint32_t record_duration_ms;/* текущая длительность записи */
+    uint32_t silence_ms;        /* текущая непрерывная тишина после начала речи */
+    uint32_t silence_limit_ms;  /* порог отсечки тишины (3000 мс) */
+} kouki_voice_metrics_t;
+
 /* Текущее состояние — для отрисовки из LVGL-таймера. */
 void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
+
+/* Метрики записи и VAD — для отрисовки дуги затухания и таймингов в UI. */
+void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics);
 
 /* Диагностика FSM: печатает состояние, время, причину и статистику в консоль. */
 void kouki_voice_print_state(void);

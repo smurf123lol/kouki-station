@@ -1,5 +1,6 @@
 #include "done_state.hpp"
 #include <cstring>
+#include "app_history.h"
 
 #ifdef ESP_PLATFORM
 #include "app_speech.h"
@@ -31,6 +32,10 @@ void DoneState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     m_interrupted = false;
     m_next_on_interrupt = StateId::Idle;
     m_answer_text[0] = '\0';
+
+    if (ctx.result.transcript[0] != '\0' || ctx.result.answer[0] != '\0') {
+        kouki_history_push(&ctx.result);
+    }
 
 #ifdef ESP_PLATFORM
     m_entered_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);

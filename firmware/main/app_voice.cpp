@@ -231,9 +231,16 @@ void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *
     s_manager.get_snapshot(state, result);
 }
 
+void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics)
+{
+    s_manager.get_metrics(metrics);
+}
+
 void kouki_voice_print_state(void)
 {
     FsmDiagnostics d = s_manager.get_diagnostics();
+    kouki_voice_metrics_t m{};
+    s_manager.get_metrics(&m);
     double seconds = static_cast<double>(d.buffer_used / BYTES_PER_SAMPLE) / static_cast<double>(SAMPLE_RATE);
 
     std::printf("\n--- FSM Состояние ---\n");
@@ -245,7 +252,11 @@ void kouki_voice_print_state(void)
     std::printf("Прерываний:    %u\n", static_cast<unsigned>(d.interrupt_count));
     std::printf("Буфер аудио:   %u / %u байт (%.1f сек)\n",
                 static_cast<unsigned>(d.buffer_used), static_cast<unsigned>(d.buffer_capacity), seconds);
-    std::printf("VAD тишина:    %u мс\n", static_cast<unsigned>(d.vad_silence_ms));
+    std::printf("VAD метрики:   речь=%s, тишина=%u/%u мс, длит=%u мс\n",
+                m.speech_detected ? "да" : "нет",
+                static_cast<unsigned>(m.silence_ms),
+                static_cast<unsigned>(m.silence_limit_ms),
+                static_cast<unsigned>(m.record_duration_ms));
     std::printf("---------------------\n\n");
 }
 

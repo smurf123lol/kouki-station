@@ -7,8 +7,11 @@
  * живут на I2C, который поднимает именно аудио-борда.
  */
 #include "app_config.h"
+#include "app_history.h"
 #include "app_ota.h"
+#include "app_power.h"
 #include "app_setup.h"
+#include "app_time.h"
 #include "app_ui.h"
 #include "app_voice.h"
 #include "app_wifi.h"
@@ -158,6 +161,8 @@ void app_main(void)
     LVGL_Init();
 
     ESP_ERROR_CHECK(kouki_voice_init(NULL, NULL));
+    kouki_history_init();
+    kouki_power_init();
     kouki_ui_init();
 
     kouki_setup_console_init();
@@ -175,9 +180,18 @@ void app_main(void)
 
     ESP_LOGI(TAG, "станция готова: %d с записи на одну фразу", CONFIG_KOUKI_MAX_RECORD_S);
 
+    uint64_t last_tick_us = esp_timer_get_time();
     while (true) {
         /* LVGL не потокобезопасен: весь UI живёт в этой задаче. */
         lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(5));
+
+        uint64_t now_us = esp_timer_get_time();
+        uint32_t dt_ms = (uint32_t)((now_us - last_tick_us) / 1000);
+        if (dt_ms >= 50) {
+            kouki_power_tick(dt_ms);
+            last_tick_us = now_us;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

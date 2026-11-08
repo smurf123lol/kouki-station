@@ -19,6 +19,9 @@ idf_component_register(
         "./app_tone.c"
         "./app_speech.c"
         "./app_ota.c"
+        "./app_time.c"
+        "./app_power.c"
+        "./app_history.c"
         # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md
         "./drivers/exio/TCA9554PWR.c"
         "./drivers/lcd/esp_lcd_st77916/esp_lcd_st77916.c"
@@ -50,6 +53,7 @@ idf_component_register(
         esp_wifi
         esp_event
         esp_netif
+        lwip
         esp-tls
         esp_driver_usb_serial_jtag
         nvs_flash

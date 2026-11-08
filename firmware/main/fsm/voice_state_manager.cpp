@@ -215,7 +215,7 @@ FsmDiagnostics VoiceStateManager::get_diagnostics() const noexcept {
 
 void VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept {
 #ifdef ESP_PLATFORM
-    if (m_lock) xSemaphoreTakeRecursive(m_lock, pdMS_TO_TICKS(50));
+    bool locked = (m_lock && xSemaphoreTakeRecursive(m_lock, pdMS_TO_TICKS(50)) == pdTRUE);
 #endif
     if (state) {
         *state = to_c_state(m_current_id);
@@ -224,7 +224,23 @@ void VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_res
         *result = m_context.result;
     }
 #ifdef ESP_PLATFORM
-    if (m_lock) xSemaphoreGiveRecursive(m_lock);
+    if (locked) xSemaphoreGiveRecursive(m_lock);
+#endif
+}
+
+void VoiceStateManager::get_metrics(kouki_voice_metrics_t *metrics) const noexcept {
+    if (!metrics) return;
+#ifdef ESP_PLATFORM
+    bool locked = (m_lock && xSemaphoreTakeRecursive(m_lock, pdMS_TO_TICKS(50)) == pdTRUE);
+#endif
+    metrics->is_recording = (m_current_id == StateId::Recording);
+    metrics->speech_detected = m_context.speech_detected;
+    metrics->record_duration_ms = static_cast<uint32_t>(
+        m_context.sample_bytes / (BYTES_PER_SAMPLE * (SAMPLE_RATE / 1000)));
+    metrics->silence_ms = m_context.speech_detected ? m_context.last_vad_silence_ms : 0;
+    metrics->silence_limit_ms = (m_context.dialogue_continue) ? 1500 : 3000;
+#ifdef ESP_PLATFORM
+    if (locked) xSemaphoreGiveRecursive(m_lock);
 #endif
 }
 
