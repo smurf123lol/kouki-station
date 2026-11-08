@@ -1,5 +1,6 @@
 #include "LVGL_Driver.h"
 #include "esp_heap_caps.h"
+#include "app_power.h"
 
 static const char *TAG_LVGL = "LVGL";
 
@@ -59,6 +60,7 @@ void example_touchpad_read( lv_indev_drv_t * drv, lv_indev_data_t * data )
 
     // printf("CCCCCCCCCCCCC=%d  \r\n",touchpad_cnt);
     if (touchpad_pressed && touchpad_cnt > 0) {
+        kouki_power_notify_activity();
         data->point.x = touchpad_x[0];
         data->point.y = touchpad_y[0];
         data->state = LV_INDEV_STATE_PR;

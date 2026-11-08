@@ -4,6 +4,7 @@
 #ifdef ESP_PLATFORM
 #include "app_tone.h"
 #include "app_config.h"
+#include "app_power.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #endif
@@ -15,6 +16,7 @@ void RecordingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     ctx.result = {};
 
 #ifdef ESP_PLATFORM
+    kouki_power_notify_activity();
     m_min_amplitude = CONFIG_KOUKI_MIN_AMPLITUDE;
     m_vad_silence_ms = 3000;
     m_max_record_ms = CONFIG_KOUKI_MAX_RECORD_S * 1000;
@@ -59,6 +61,7 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
     if (ctx.dialogue_continue) {
         if (is_loud) {
             ctx.followup_silence_chunks = 0;
+            ctx.last_vad_silence_ms = 0;
         } else {
             ctx.followup_silence_chunks++;
             uint32_t silence_ms = static_cast<uint32_t>(
@@ -77,6 +80,7 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
                 ctx.speech_detected = true;
             }
             ctx.silence_chunks = 0;
+            ctx.last_vad_silence_ms = 0;
         } else {
             ctx.silence_chunks++;
             uint32_t silence_ms = static_cast<uint32_t>(

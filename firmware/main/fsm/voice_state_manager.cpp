@@ -228,6 +228,22 @@ void VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_res
 #endif
 }
 
+void VoiceStateManager::get_metrics(kouki_voice_metrics_t *metrics) const noexcept {
+    if (!metrics) return;
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreTakeRecursive(m_lock, pdMS_TO_TICKS(50));
+#endif
+    metrics->is_recording = (m_current_id == StateId::Recording);
+    metrics->speech_detected = m_context.speech_detected;
+    metrics->record_duration_ms = static_cast<uint32_t>(
+        m_context.sample_bytes / (BYTES_PER_SAMPLE * (SAMPLE_RATE / 1000)));
+    metrics->silence_ms = m_context.speech_detected ? m_context.last_vad_silence_ms : 0;
+    metrics->silence_limit_ms = (m_current_id == StateId::Followup) ? 1500 : 3000;
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreGiveRecursive(m_lock);
+#endif
+}
+
 void VoiceStateManager::publish_state(StateId st, const kouki_voice_result_t *res) noexcept {
     if (m_context.listener_cb) {
         m_context.listener_cb(to_c_state(st), res ? res : &m_context.result, m_context.listener_ctx);

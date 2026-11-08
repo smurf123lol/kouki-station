@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "app_time.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -35,6 +36,10 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "адрес получен: " IPSTR, IP2STR(&event->ip_info.ip));
         s_connected = true;
+        char gw_str[16] = {0};
+        esp_ip4addr_ntoa(&event->ip_info.gw, gw_str, sizeof(gw_str));
+        kouki_time_set_fallback_server(gw_str);
+        kouki_time_init(NULL);
         xEventGroupSetBits(s_events, CONNECTED_BIT);
     }
 }
