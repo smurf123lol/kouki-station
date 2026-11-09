@@ -253,14 +253,24 @@ void UiStateManager::toggle_recording()
         return;
     }
 
-    if (kouki_voice_is_recording()) {
+    kouki_voice_state_t v_state = m_last_voice_state;
+    kouki_voice_get_snapshot(&v_state, nullptr);
+
+    if (v_state == KOUKI_VOICE_RECORDING || kouki_voice_is_recording()) {
         ESP_LOGI(TAG, "останавливаю запись");
         kouki_voice_stop_and_send();
         return;
     }
 
+    if (v_state == KOUKI_VOICE_SENDING) {
+        ESP_LOGW(TAG, "запись не началась: идёт отправка");
+        return;
+    }
+
     if (kouki_speech_is_playing() || kouki_speech_busy()) {
         ESP_LOGI(TAG, "прерываю озвучивание перед новой записью");
+        kouki_speech_abort();
+    } else if (v_state == KOUKI_VOICE_DONE) {
         kouki_speech_abort();
     }
 

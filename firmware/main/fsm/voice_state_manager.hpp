@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <array>
+#include <atomic>
 #include "voice_types.hpp"
 #include "voice_context.hpp"
 #include "voice_state_base.hpp"
@@ -46,7 +47,12 @@ public:
     void interrupt(const char* reason);
     void step(const int16_t *pcm, size_t samples);
 
-    StateId current_id() const noexcept { return m_current_id; }
+    bool try_set_session(kouki_session_t session) noexcept;
+    kouki_session_t get_session() const noexcept;
+    bool start_recording_from_button() noexcept;
+    bool stop_and_send_from_button() noexcept;
+
+    StateId current_id() const noexcept { return m_current_id.load(std::memory_order_acquire); }
     StateId previous_id() const noexcept { return m_previous_id; }
     const char* current_name() const noexcept;
     uint32_t time_in_current_state_ms() const noexcept;
@@ -76,7 +82,7 @@ private:
     std::array<VoiceStateBase*, STATE_COUNT> m_states{};
     VoiceStateBase* m_current_state = nullptr;
 
-    StateId m_current_id = StateId::Idle;
+    std::atomic<StateId> m_current_id{StateId::Idle};
     StateId m_previous_id = StateId::Idle;
     const char* m_last_transition_reason = "boot";
 

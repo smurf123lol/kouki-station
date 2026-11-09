@@ -20,6 +20,7 @@ namespace kouki::voice {
 struct SpeechWorkerArgs {
     DoneState *self;
     uint32_t gen;
+    uint32_t speech_gen;
     char text[512];
 };
 
@@ -27,11 +28,12 @@ void DoneState::speech_worker_task(void *arg) {
     auto *args = static_cast<SpeechWorkerArgs *>(arg);
     DoneState *self = args ? args->self : nullptr;
     const uint32_t gen = args ? args->gen : 0;
+    const uint32_t speech_gen = args ? args->speech_gen : 0;
     bool ok = false;
 
     if (args && args->text[0] != '\0' && self &&
         self->m_speech_gen.load() == gen && !self->m_interrupted.load()) {
-        ok = (kouki_speech_play(args->text) == ESP_OK);
+        ok = (kouki_speech_play_gen(args->text, speech_gen) == ESP_OK);
     }
     delete args;
 
@@ -61,10 +63,12 @@ void DoneState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
 
 #if defined(CONFIG_KOUKI_SPEECH_ENABLED)
     if (ctx.result.answer[0] != '\0' && !kouki_config_is_silent()) {
+        const uint32_t speech_gen = kouki_speech_reserve();
         auto *args = new (std::nothrow) SpeechWorkerArgs{};
         if (args) {
             args->self = this;
             args->gen = m_speech_gen.load();
+            args->speech_gen = speech_gen;
             std::strncpy(args->text, ctx.result.answer, sizeof(args->text) - 1);
             args->text[sizeof(args->text) - 1] = '\0';
 
@@ -150,9 +154,7 @@ void DoneState::on_interrupt(VoiceContext& /*ctx*/, const char* reason) {
     }
 
 #ifdef ESP_PLATFORM
-    if (kouki_speech_is_playing() || kouki_speech_busy()) {
-        kouki_speech_abort();
-    }
+    kouki_speech_abort();
 #endif
     m_interrupted = true;
 }
@@ -160,9 +162,7 @@ void DoneState::on_interrupt(VoiceContext& /*ctx*/, const char* reason) {
 void DoneState::on_exit(VoiceContext& /*ctx*/) {
     m_speech_gen.fetch_add(1);
 #ifdef ESP_PLATFORM
-    if (kouki_speech_is_playing() || kouki_speech_busy()) {
-        kouki_speech_abort();
-    }
+    kouki_speech_abort();
 #endif
     m_speech_started = false;
     m_speech_finished = false;

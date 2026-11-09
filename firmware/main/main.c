@@ -107,7 +107,9 @@ static void kouki_player_init(void)
     }
 #endif
 
+    kouki_audio_out_lock();
     const esp_err_t vol_err = esp_audio_set_play_vol(CONFIG_KOUKI_PLAYER_VOLUME);
+    kouki_audio_out_unlock();
     if (vol_err == ESP_OK) {
         ESP_LOGI(TAG, "громкость выхода: %d %%", CONFIG_KOUKI_PLAYER_VOLUME);
     } else {

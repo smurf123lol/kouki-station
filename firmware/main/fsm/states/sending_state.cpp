@@ -56,6 +56,13 @@ void SendingState::send_worker_task(void *arg) {
         return;
     }
 
+    kouki_tone_play(KOUKI_TONE_STOP_SENDING);
+    if (self->m_cancelled.load()) {
+        self->notify_complete(StateId::Idle);
+        vTaskDelete(nullptr);
+        return;
+    }
+
     if (!kouki_wifi_is_connected()) {
         std::strncpy(ctx->result.error, "Нет сети", sizeof(ctx->result.error) - 1);
         ctx->result.error[sizeof(ctx->result.error) - 1] = '\0';
@@ -185,8 +192,6 @@ void SendingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
         return;
     }
 
-    kouki_tone_play(KOUKI_TONE_STOP_SENDING);
-
     auto *worker_ctx = new SendWorkerCtx{this, &ctx};
     if (xTaskCreate(send_worker_task, "fsm.send", 8192, worker_ctx, 5, &m_task_handle) != pdPASS) {
         delete worker_ctx;
@@ -197,9 +202,8 @@ void SendingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
 #else
     if (!ctx.is_loud_enough(120)) {
         notify_complete(StateId::Error);
-    } else {
-        notify_complete(StateId::Done);
     }
+    // Stay in Sending on host until notify_complete() or cancel
 #endif
 }
 
@@ -210,7 +214,10 @@ StateId SendingState::on_step(VoiceContext& /*ctx*/, const int16_t* /*pcm*/, siz
     return StateId::Stay;
 }
 
-void SendingState::on_interrupt(VoiceContext& /*ctx*/, const char* /*reason*/) {
+void SendingState::on_interrupt(VoiceContext& /*ctx*/, const char* reason) {
+    if (!reason || std::strcmp(reason, "cancel") != 0) {
+        return;
+    }
     m_cancelled = true;
 #ifdef ESP_PLATFORM
     if (m_client_lock && xSemaphoreTake(m_client_lock, pdMS_TO_TICKS(100)) == pdTRUE) {

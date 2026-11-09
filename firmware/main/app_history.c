@@ -100,8 +100,16 @@ void kouki_history_push(const kouki_voice_result_t *res)
     const size_t total = s_count;
     char preview[64];
     const char *src = slot->transcript[0] ? slot->transcript : slot->answer;
-    strncpy(preview, src, sizeof(preview) - 1);
-    preview[sizeof(preview) - 1] = '\0';
+    size_t cut = 0;
+    const size_t max_bytes = sizeof(preview) - 1;
+    while (src[cut] != '\0' && cut < max_bytes) {
+        cut++;
+    }
+    while (cut > 0 && (((unsigned char)src[cut] & 0xC0u) == 0x80u)) {
+        cut--;
+    }
+    memcpy(preview, src, cut);
+    preview[cut] = '\0';
 
     if (s_history_mutex) {
         xSemaphoreGive(s_history_mutex);

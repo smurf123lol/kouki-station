@@ -31,6 +31,18 @@ esp_err_t kouki_speech_play(const char *text)
     return ESP_OK;
 }
 
+uint32_t kouki_speech_reserve(void)
+{
+    return 0;
+}
+
+esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
+{
+    (void)text;
+    (void)gen;
+    return ESP_OK;
+}
+
 bool kouki_speech_busy(void)
 {
     return false;
@@ -84,19 +96,26 @@ static atomic_uint_fast32_t s_speaking_gen;
 
 static bool speech_is_gen_aborted(uint32_t gen)
 {
+    const uint32_t latest = (uint32_t)atomic_load_explicit(&s_latest_gen, memory_order_acquire);
     return gen == 0 ||
-           gen <= (uint32_t)atomic_load_explicit(&s_aborted_up_to_gen, memory_order_acquire);
+           gen <= (uint32_t)atomic_load_explicit(&s_aborted_up_to_gen, memory_order_acquire) ||
+           gen < latest;
+}
+
+uint32_t kouki_speech_reserve(void)
+{
+    return (uint32_t)atomic_fetch_add_explicit(&s_latest_gen, 1, memory_order_acq_rel) + 1u;
 }
 
 bool kouki_speech_busy(void)
 {
-    const uint32_t g = (uint32_t)atomic_load_explicit(&s_speaking_gen, memory_order_acquire);
+    const uint32_t g = (uint32_t)atomic_load_explicit(&s_active_gen, memory_order_acquire);
     return g != 0 && !speech_is_gen_aborted(g);
 }
 
 bool kouki_speech_is_playing(void)
 {
-    const uint32_t g = (uint32_t)atomic_load_explicit(&s_active_gen, memory_order_acquire);
+    const uint32_t g = (uint32_t)atomic_load_explicit(&s_speaking_gen, memory_order_acquire);
     return g != 0 && !speech_is_gen_aborted(g);
 }
 
@@ -243,7 +262,7 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint32_t gen, uint
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 15000,
+        .timeout_ms = 5000,
         .buffer_size = 4096,
         .event_handler = speech_http_event,
     };
@@ -298,7 +317,25 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint32_t gen, uint
         return ESP_ERR_INVALID_STATE;
     }
 
-    const int64_t hdr_len = esp_http_client_fetch_headers(client);
+    esp_http_client_set_timeout_ms(client, 1000);
+    int64_t hdr_len = -1;
+    int hdr_wait_ms = 0;
+    while (true) {
+        if (speech_is_gen_aborted(gen)) {
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_ERR_INVALID_STATE;
+        }
+        hdr_len = esp_http_client_fetch_headers(client);
+        if (hdr_len == -ESP_ERR_HTTP_EAGAIN) {
+            hdr_wait_ms += 1000;
+            if (hdr_wait_ms >= 15000) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
     const int status = esp_http_client_get_status_code(client);
     if (status > 0) {
         kouki_ota_mark_server_communicated();
@@ -318,16 +355,30 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint32_t gen, uint
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_http_client_set_timeout_ms(client, 250);
+
     if (status != 200) {
-        /* Тело ошибки короткое ({"error": "..."}) — читаем на стек без PSRAM 2.4 МБ. */
+        /* Тело ошибки короткое ({"error": "..."}) — читаем на стек без аллокации PSRAM. */
         char text[192] = {0};
         size_t pos = 0;
+        int err_wait_ms = 0;
         while (pos < sizeof(text) - 1) {
+            if (speech_is_gen_aborted(gen)) {
+                break;
+            }
             const int r = esp_http_client_read(client, text + pos, (int)(sizeof(text) - 1 - pos));
+            if (r == -ESP_ERR_HTTP_EAGAIN) {
+                err_wait_ms += 250;
+                if (err_wait_ms >= 2000) {
+                    break;
+                }
+                continue;
+            }
             if (r <= 0) {
                 break;
             }
             pos += (size_t)r;
+            err_wait_ms = 0;
         }
         text[pos] = '\0';
         ESP_LOGW(TAG, "озвучивание недоступно: HTTP %d, %.160s", status, text);
@@ -336,9 +387,35 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint32_t gen, uint
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    uint8_t *buf = heap_caps_malloc(SPEECH_BUF_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (hdr_len > (int64_t)SPEECH_READ_CAP) {
+        ESP_LOGW(TAG, "ответ речи слишком большой: %lld байт", (long long)hdr_len);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (speech_is_gen_aborted(gen)) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    size_t read_cap = SPEECH_READ_CAP;
+    size_t alloc_cap = SPEECH_BUF_CAP;
+    if (hdr_len > 0) {
+        read_cap = (size_t)hdr_len;
+        alloc_cap = read_cap * 2u + 64u;
+        if (alloc_cap < 4096u) {
+            alloc_cap = 4096u;
+        }
+        if (alloc_cap > SPEECH_BUF_CAP) {
+            alloc_cap = SPEECH_BUF_CAP;
+        }
+    }
+
+    uint8_t *buf = heap_caps_malloc(alloc_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buf == NULL) {
-        ESP_LOGE(TAG, "нет памяти под WAV (%u байт)", (unsigned)SPEECH_BUF_CAP);
+        ESP_LOGE(TAG, "нет памяти под WAV (%u байт)", (unsigned)alloc_cap);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return ESP_ERR_NO_MEM;
@@ -348,28 +425,45 @@ static esp_err_t fetch_wav(const char *body, size_t body_len, uint32_t gen, uint
     bool overflow = false;
     bool aborted = false;
     bool read_err = false;
+    int read_wait_ms = 0;
     while (true) {
         if (speech_is_gen_aborted(gen)) {
             aborted = true;
             break;
         }
-        if (len >= SPEECH_READ_CAP) {
+        if (len >= read_cap) {
+            if (hdr_len > 0) {
+                break;
+            }
             char probe;
             const int r = esp_http_client_read(client, &probe, 1);
             if (r > 0) {
                 overflow = true;
+            } else if (r == -ESP_ERR_HTTP_EAGAIN) {
+                read_wait_ms += 250;
+                if (read_wait_ms >= 2000) {
+                    break;
+                }
+                continue;
             } else if (r < 0) {
                 read_err = true;
             }
             break;
         }
-        const size_t avail = SPEECH_READ_CAP - len;
+        const size_t avail = read_cap - len;
         const size_t chunk = avail < 4096u ? avail : 4096u;
         const int r = esp_http_client_read(client, (char *)(buf + len), (int)chunk);
         if (r > 0) {
             len += (size_t)r;
+            read_wait_ms = 0;
         } else if (r == 0) {
             break;
+        } else if (r == -ESP_ERR_HTTP_EAGAIN) {
+            read_wait_ms += 250;
+            if (read_wait_ms >= 15000) {
+                read_err = true;
+                break;
+            }
         } else {
             read_err = true;
             break;
@@ -575,7 +669,7 @@ static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len, uint3
     return err;
 }
 
-esp_err_t kouki_speech_play(const char *text)
+esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
 {
     if (text == NULL || text[0] == '\0') {
         return ESP_OK;       /* нечего озвучивать: это не ошибка */
@@ -586,7 +680,9 @@ esp_err_t kouki_speech_play(const char *text)
         return ESP_OK;
     }
 
-    const uint32_t gen = (uint32_t)atomic_fetch_add_explicit(&s_latest_gen, 1, memory_order_acq_rel) + 1u;
+    if (gen == 0) {
+        gen = kouki_speech_reserve();
+    }
     uint_fast32_t expected = 0;
     while (true) {
         if (speech_is_gen_aborted(gen)) {
@@ -648,5 +744,10 @@ esp_err_t kouki_speech_play(const char *text)
         kouki_wake_mute(350);
     }
     return err;
+}
+
+esp_err_t kouki_speech_play(const char *text)
+{
+    return kouki_speech_play_gen(text, 0);
 }
 #endif // CONFIG_KOUKI_SPEECH_ENABLED

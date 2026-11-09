@@ -493,12 +493,7 @@ static void handle_console_command(const char *cmd)
             for (int i = 0; i < KOUKI_HISTORY_CAPACITY; i++) {
                 memset(res, 0, sizeof(*res));
                 res->has_transcript = true;
-                if (i % 3 == 0) {
-                    snprintf(res->transcript, sizeof(res->transcript), "Записать задачу номер %d", i + 1);
-                    snprintf(res->intent, sizeof(res->intent), "add_task");
-                    snprintf(res->outcome, sizeof(res->outcome), "created");
-                    snprintf(res->task_title, sizeof(res->task_title), "Задача #%d", i + 1);
-                } else if (i == 9) {
+                if (i == 9) {
                     snprintf(res->transcript, sizeof(res->transcript), "Длинный контрольный вопрос для карточки истории %d", i + 1);
                     snprintf(res->intent, sizeof(res->intent), "ask");
                     snprintf(res->outcome, sizeof(res->outcome), "executed");
@@ -508,6 +503,11 @@ static void handle_console_command(const char *cmd)
                              "Пункт первый — распределение задач без обрыва на середине слова. Пункт второй — корректное усечение "
                              "многобайтовых символов UTF-8. Пункт третий — плавная прокрутка десяти карточек истории без сбоев "
                              "в основном потоке LVGL и без переполнения стека задачи main_task. Итог проверки фиксируется в симуляторе.");
+                } else if (i % 3 == 0) {
+                    snprintf(res->transcript, sizeof(res->transcript), "Записать задачу номер %d", i + 1);
+                    snprintf(res->intent, sizeof(res->intent), "add_task");
+                    snprintf(res->outcome, sizeof(res->outcome), "created");
+                    snprintf(res->task_title, sizeof(res->task_title), "Задача #%d", i + 1);
                 } else {
                     snprintf(res->transcript, sizeof(res->transcript), "Короткий вопрос ассистенту %d", i + 1);
                     snprintf(res->intent, sizeof(res->intent), "ask");

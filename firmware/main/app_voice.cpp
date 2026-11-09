@@ -134,23 +134,19 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
 
 esp_err_t kouki_voice_set_session(kouki_session_t session)
 {
-    StateId cur = s_manager.current_id();
-    if (cur == StateId::Recording || cur == StateId::Sending) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    s_manager.context().session = session;
-    s_manager.context().dialogue_continue = false;
-    return ESP_OK;
+    return s_manager.try_set_session(session) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 kouki_session_t kouki_voice_get_session(void)
 {
-    return s_manager.context().session;
+    return s_manager.get_session();
 }
 
 esp_err_t kouki_voice_start_recording(void)
 {
+    if (s_manager.current_id() == StateId::Sending) {
+        return ESP_ERR_INVALID_STATE;
+    }
 #ifdef ESP_PLATFORM
     if (!kouki_wifi_is_connected()) {
         kouki_tone_play(KOUKI_TONE_ERROR);
@@ -158,29 +154,12 @@ esp_err_t kouki_voice_start_recording(void)
         return ESP_ERR_INVALID_STATE;
     }
 #endif
-
-    StateId cur = s_manager.current_id();
-    if (cur == StateId::Recording) {
-        return ESP_OK; // Повторный старт во время записи игнорируется
-    }
-
-    if (cur == StateId::Idle) {
-        s_manager.transition_to(StateId::Recording, "button_start");
-    } else {
-        // Прерывание текущего состояния (например, FOLLOWUP или DONE)
-        s_manager.interrupt("button_start");
-    }
-    return ESP_OK;
+    return s_manager.start_recording_from_button() ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t kouki_voice_stop_and_send(void)
 {
-    StateId cur = s_manager.current_id();
-    if (cur == StateId::Recording) {
-        s_manager.interrupt("button_stop");
-    } else if (cur == StateId::Sending || cur == StateId::Followup) {
-        s_manager.interrupt("cancel");
-    }
+    s_manager.stop_and_send_from_button();
     return ESP_OK;
 }
 

@@ -127,7 +127,9 @@ SettingsTile::SettingsTile(lv_obj_t* parent, UiStateManager* manager)
 
     // 1. Секция: Громкость
     int current_vol = 70;
+    kouki_audio_out_lock();
     esp_audio_get_play_vol(&current_vol);
+    kouki_audio_out_unlock();
 
     m_vol_label = lv_label_create(m_scroll_container);
     char vol_buf[32];
