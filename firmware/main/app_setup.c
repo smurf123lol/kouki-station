@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "app_history.h"
 #include "app_ui.h"
 #include "app_voice.h"
 #include "driver/usb_serial_jtag.h"
@@ -20,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/x509_crt.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "kouki.setup";
 
@@ -337,9 +339,14 @@ bool kouki_setup_is_active(void)
 static void handle_console_command(const char *cmd)
 {
     if (strcmp(cmd, "show") == 0) {
-        char buf[512];
-        kouki_config_format_masked(buf, sizeof(buf));
-        printf("\n=== Текущие настройки ===\n%s\n", buf);
+        char *buf = malloc(512);
+        if (buf != NULL) {
+            kouki_config_format_masked(buf, 512);
+            printf("\n=== Текущие настройки ===\n%s\n", buf);
+            free(buf);
+        } else {
+            printf("Ошибка: нет памяти\n");
+        }
         kouki_voice_print_state();
     } else if (strcmp(cmd, "state") == 0) {
         kouki_voice_print_state();
@@ -361,6 +368,10 @@ static void handle_console_command(const char *cmd)
                "  ask                     — начать голосовую запись (сессия ASK)\n"
                "  diag                    — показать свободную память (heap/PSRAM)\n"
                "  reboot                  — перезагрузить станцию\n"
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+               "  test_seed_history       — заполнить историю 10 тестовыми записями (отладка)\n"
+               "  test_mock_done          — перевести FSM в DONE с длинным ответом (отладка)\n"
+#endif
                "  help                    — эта справка\n\n");
     } else if (strncmp(cmd, "set_wifi ", 9) == 0) {
         const char *args = cmd + 9;
@@ -472,21 +483,88 @@ static void handle_console_command(const char *cmd)
         printf("Перезагрузка…\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+    } else if (strcmp(cmd, "test_seed_history") == 0) {
+        kouki_history_clear();
+        kouki_voice_result_t *res = malloc(sizeof(kouki_voice_result_t));
+        if (res == NULL) {
+            printf("Ошибка: нет памяти\n");
+        } else {
+            for (int i = 0; i < KOUKI_HISTORY_CAPACITY; i++) {
+                memset(res, 0, sizeof(*res));
+                res->has_transcript = true;
+                if (i % 3 == 0) {
+                    snprintf(res->transcript, sizeof(res->transcript), "Записать задачу номер %d", i + 1);
+                    snprintf(res->intent, sizeof(res->intent), "add_task");
+                    snprintf(res->outcome, sizeof(res->outcome), "created");
+                    snprintf(res->task_title, sizeof(res->task_title), "Задача #%d", i + 1);
+                } else if (i == 9) {
+                    snprintf(res->transcript, sizeof(res->transcript), "Длинный контрольный вопрос для карточки истории %d", i + 1);
+                    snprintf(res->intent, sizeof(res->intent), "ask");
+                    snprintf(res->outcome, sizeof(res->outcome), "executed");
+                    snprintf(res->command, sizeof(res->command), "ask");
+                    snprintf(res->answer, sizeof(res->answer),
+                             "Тест длинного ответа кириллицей: проверка переполнения стека и переноса строк на круглом экране 360x360. "
+                             "Пункт первый — распределение задач без обрыва на середине слова. Пункт второй — корректное усечение "
+                             "многобайтовых символов UTF-8. Пункт третий — плавная прокрутка десяти карточек истории без сбоев "
+                             "в основном потоке LVGL и без переполнения стека задачи main_task. Итог проверки фиксируется в симуляторе.");
+                } else {
+                    snprintf(res->transcript, sizeof(res->transcript), "Короткий вопрос ассистенту %d", i + 1);
+                    snprintf(res->intent, sizeof(res->intent), "ask");
+                    snprintf(res->outcome, sizeof(res->outcome), "executed");
+                    snprintf(res->command, sizeof(res->command), "ask");
+                    snprintf(res->answer, sizeof(res->answer), "Короткий тестовый ответ номер %d.", i + 1);
+                }
+                kouki_history_push(res);
+            }
+            free(res);
+            printf("OK (добавлено %u записей в историю)\n", (unsigned)kouki_history_count());
+        }
+    } else if (strcmp(cmd, "test_mock_done") == 0) {
+        kouki_voice_result_t *res = calloc(1, sizeof(kouki_voice_result_t));
+        if (res == NULL) {
+            printf("Ошибка: нет памяти\n");
+        } else {
+            res->has_transcript = true;
+            snprintf(res->transcript, sizeof(res->transcript), "Расскажи подробно про статус системы и длинный текст");
+            snprintf(res->intent, sizeof(res->intent), "ask");
+            snprintf(res->outcome, sizeof(res->outcome), "executed");
+            snprintf(res->command, sizeof(res->command), "ask");
+            snprintf(res->answer, sizeof(res->answer),
+                     "Демонстрационный длинный ответ в состоянии DONE: проверяем автопрокрутку карточки "
+                     "(280x230), остановку прокрутки касанием тела карточки и перехват записи только через "
+                     "верхнюю мини-сферу. Текст специально длинный (более четырёхсот символов кириллицы), "
+                     "чтобы карточка гарантированно выходила за пределы видимой области и позволяла скролл "
+                     "пальцем по центру без случайного срабатывания микрофона или свайпа на соседний экран.");
+            res->http_status = 200;
+            res->duration_ms = 1800;
+            esp_err_t err = kouki_voice_test_mock_done(res);
+            free(res);
+            printf("%s (mock DONE)\n", err == ESP_OK ? "OK" : "Ошибка: нельзя перейти в DONE");
+        }
+#endif
     } else {
         printf("Неизвестная команда. Введите 'help' для списка команд.\n");
     }
 }
 
+#define CONSOLE_LINE_MAX 512
+
 static void console_task(void *arg)
 {
     (void)arg;
-    char line[512];
+    char *line = malloc(CONSOLE_LINE_MAX);
+    if (line == NULL) {
+        ESP_LOGE(TAG, "нет памяти под буфер консоли");
+        vTaskDelete(NULL);
+        return;
+    }
 
     printf("\n=== Kouki Station Console ===\n");
     printf("Введите 'help' для списка команд.\n> ");
     fflush(stdout);
 
-    while (fgets(line, sizeof(line), stdin) != NULL) {
+    while (fgets(line, CONSOLE_LINE_MAX, stdin) != NULL) {
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
             line[--len] = '\0';
@@ -497,6 +575,7 @@ static void console_task(void *arg)
         printf("> ");
         fflush(stdout);
     }
+    free(line);
     vTaskDelete(NULL);
 }
 
@@ -509,6 +588,6 @@ esp_err_t kouki_setup_console_init(void)
         usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CRLF);
         usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
     }
-    BaseType_t res = xTaskCreate(console_task, "kouki.console", 4096, NULL, 3, NULL);
+    BaseType_t res = xTaskCreate(console_task, "kouki.console", 6144, NULL, 3, NULL);
     return res == pdPASS ? ESP_OK : ESP_FAIL;
 }

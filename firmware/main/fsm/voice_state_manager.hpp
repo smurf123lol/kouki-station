@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #endif
 
 namespace kouki::voice {
@@ -63,6 +64,10 @@ public:
 
     // Вспомогательная функция для получения времени в миллисекундах
     static uint64_t get_time_ms() noexcept;
+
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+    bool force_done_for_test(const kouki_voice_result_t& res);
+#endif
 
 private:
     void transition_to_unlocked(StateId target, const char* reason);

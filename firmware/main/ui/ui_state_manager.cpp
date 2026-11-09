@@ -7,8 +7,6 @@
 #include "app_voice.h"
 #include "app_speech.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "kouki.ui.mgr";
 
@@ -261,10 +259,9 @@ void UiStateManager::toggle_recording()
         return;
     }
 
-    if (kouki_speech_is_playing()) {
+    if (kouki_speech_is_playing() || kouki_speech_busy()) {
         ESP_LOGI(TAG, "прерываю озвучивание перед новой записью");
         kouki_speech_abort();
-        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     const esp_err_t start_err = kouki_voice_start_recording();

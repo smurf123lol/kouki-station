@@ -14,6 +14,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
+#include "sdkconfig.h"
 #else
 typedef int esp_err_t;
 #define ESP_OK 0
@@ -107,6 +108,11 @@ void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics);
 
 /* Диагностика FSM: печатает состояние, время, причину и статистику в консоль. */
 void kouki_voice_print_state(void);
+
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+/* Отладочный хук только для CONFIG_KOUKI_TEST_CONSOLE_CMDS=y: переводит FSM в DONE с макетом ответа. */
+esp_err_t kouki_voice_test_mock_done(const kouki_voice_result_t *result);
+#endif
 
 #ifdef __cplusplus
 }

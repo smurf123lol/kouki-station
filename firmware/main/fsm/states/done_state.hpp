@@ -3,11 +3,6 @@
 #include "fsm/voice_state_base.hpp"
 #include <atomic>
 
-#ifdef ESP_PLATFORM
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#endif
-
 namespace kouki::voice {
 
 constexpr uint64_t DONE_CARD_HOLD_MS = 2500;
@@ -25,7 +20,6 @@ public:
 private:
 #ifdef ESP_PLATFORM
     static void speech_worker_task(void *arg);
-    TaskHandle_t m_task_handle{nullptr};
 #endif
     std::atomic<uint32_t> m_speech_gen{0};
     std::atomic<bool> m_speech_started{false};

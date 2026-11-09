@@ -1,5 +1,6 @@
 #include "ui_settings_tile.hpp"
 #include "ui_state_manager.hpp"
+#include "app_audio_out.h"
 #include "app_config.h"
 #include "app_wifi.h"
 #include "app_ota.h"
@@ -29,7 +30,9 @@ static void on_volume_changed(lv_event_t* e)
     }
     lv_obj_t* slider = lv_event_get_target(e);
     int32_t val = lv_slider_get_value(slider);
+    kouki_audio_out_lock();
     esp_audio_set_play_vol(val);
+    kouki_audio_out_unlock();
     if (tile != nullptr) {
         tile->update_vol_label(val);
     }

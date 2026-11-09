@@ -241,6 +241,14 @@ menu "Kouki Station"
 
         endchoice
 
+        config KOUKI_TEST_CONSOLE_CMDS
+            bool "Тестовые команды консоли (только для отладки/симулятора)"
+            default n
+            help
+                Включает отладочные консольные команды test_seed_history и
+                test_mock_done для проверки истории и экрана ответа в симуляторе
+                без сервера. В обычной прошивке должно быть выключено (n).
+
     endmenu
 
     menu "Сервер и безопасность (TLS)"

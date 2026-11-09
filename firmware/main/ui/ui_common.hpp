@@ -33,7 +33,7 @@ constexpr int MAX_LABEL_WIDTH     = 300;
 
 // Зоны взаимодействия и тайминги UI (единые константы для прошивки и host-тестов)
 constexpr int TAP_ZONE_RADIUS              = 120;   // Внутренний круг сферы (диаметр 240 из 360 px)
-constexpr int MINI_ORB_TAP_CENTER_Y_OFFSET = -142;  // Центр мини-сферы (y=38) относительно центра 360x360
+constexpr int MINI_ORB_TAP_CENTER_Y_OFFSET = -138;  // Центр мини-сферы (y=42) относительно центра 360x360
 constexpr int MINI_ORB_TAP_RADIUS          = 40;    // Комфортная зона тапа по мини-сфере в SubDone
 constexpr int SWIPE_DRAG_THRESHOLD_PX      = 14;    // Сдвиг >14 px считается свайпом, а не тапом
 constexpr uint32_t VAD_ARC_GAP_MS          = 800;   // Пауза тишины до появления дуги отсчета
@@ -96,6 +96,37 @@ inline uint32_t compute_vad_arc_gap_ms(uint32_t silence_limit_ms)
     }
     const uint32_t half = silence_limit_ms / 2;
     return (half < VAD_ARC_GAP_MS) ? half : VAD_ARC_GAP_MS;
+}
+
+/* Плавная интерполяция отображаемой тишины между 64-мс шагами record_task (без скачков назад) */
+inline uint32_t advance_vad_silence_display(bool speech_detected,
+                                            uint32_t silence_ms,
+                                            uint32_t silence_limit_ms,
+                                            uint32_t dt_ms,
+                                            uint32_t* last_metric_silence_ms,
+                                            uint32_t* display_silence_ms)
+{
+    if (!last_metric_silence_ms || !display_silence_ms) {
+        return 0;
+    }
+    if (!speech_detected || silence_ms == 0 || silence_limit_ms == 0) {
+        *last_metric_silence_ms = 0;
+        *display_silence_ms = 0;
+    } else if (silence_ms != *last_metric_silence_ms) {
+        *last_metric_silence_ms = silence_ms;
+        if (silence_ms > *display_silence_ms ||
+            (*display_silence_ms - silence_ms) > VAD_INTERP_MAX_AHEAD_MS) {
+            *display_silence_ms = silence_ms;
+        }
+    } else {
+        uint32_t cap = silence_ms + VAD_INTERP_MAX_AHEAD_MS;
+        if (cap > silence_limit_ms) {
+            cap = silence_limit_ms;
+        }
+        const uint32_t adv = *display_silence_ms + dt_ms;
+        *display_silence_ms = (adv > cap) ? cap : adv;
+    }
+    return *display_silence_ms;
 }
 
 /* Вычисляет угол оставшейся тишины для VAD Arc (360° -> 0° после преодоления гепа) */

@@ -10,6 +10,8 @@
 #include "app_wake.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #endif
 
 namespace kouki::voice {
@@ -27,14 +29,14 @@ void DoneState::speech_worker_task(void *arg) {
     const uint32_t gen = args ? args->gen : 0;
     bool ok = false;
 
-    if (args && args->text[0] != '\0') {
+    if (args && args->text[0] != '\0' && self &&
+        self->m_speech_gen.load() == gen && !self->m_interrupted.load()) {
         ok = (kouki_speech_play(args->text) == ESP_OK);
     }
     delete args;
 
     if (self && self->m_speech_gen.load() == gen) {
         self->m_speech_ok = ok;
-        self->m_task_handle = nullptr;
         self->m_speech_finished = true;
     }
     vTaskDelete(nullptr);
@@ -54,6 +56,7 @@ void DoneState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     }
 
 #ifdef ESP_PLATFORM
+    kouki_wake_reset();
     m_entered_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
 
 #if defined(CONFIG_KOUKI_SPEECH_ENABLED)
@@ -69,11 +72,10 @@ void DoneState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
             m_speech_finished = false;
             m_speech_ok = false;
 
-            if (xTaskCreate(speech_worker_task, "fsm.speech", 8192, args, 5, &m_task_handle) != pdPASS) {
+            if (xTaskCreate(speech_worker_task, "fsm.speech", 8192, args, 5, nullptr) != pdPASS) {
                 delete args;
                 m_speech_started = false;
                 m_speech_finished = true;
-                m_task_handle = nullptr;
             }
         } else {
             m_speech_finished = true;
@@ -130,7 +132,6 @@ StateId DoneState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t samples
     }
 
     if (enable_followup && kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
-        ctx.followup_until_ms = static_cast<uint32_t>(now + CONFIG_KOUKI_FOLLOWUP_WINDOW_MS);
         return StateId::Followup;
     }
 #else

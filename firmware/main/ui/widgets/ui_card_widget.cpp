@@ -27,7 +27,10 @@ CardWidget::CardWidget(lv_obj_t* parent)
     lv_obj_set_style_radius(m_card, 12, 0);
     lv_obj_set_style_pad_all(m_card, 12, 0);
 
-    // Вертикальная прокрутка
+    // Вертикальная колонка внутри прокручиваемой карточки: исключает наложение при переносе строк
+    lv_obj_set_flex_flow(m_card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(m_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(m_card, 6, 0);
     lv_obj_set_scroll_dir(m_card, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(m_card, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_flag(m_card, LV_OBJ_FLAG_SCROLLABLE);
@@ -37,27 +40,29 @@ CardWidget::CardWidget(lv_obj_t* parent)
     m_badge_label = lv_label_create(m_card);
     lv_label_set_text(m_badge_label, "");
     lv_obj_set_style_text_font(m_badge_label, &font_ru_14, 0);
-    lv_obj_align(m_badge_label, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_clear_flag(m_badge_label, LV_OBJ_FLAG_CLICKABLE);
 
     // Лейбл цитаты распознавания («...»)
     m_transcript_label = lv_label_create(m_card);
     lv_label_set_long_mode(m_transcript_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(m_transcript_label, 256);
+    lv_obj_set_width(m_transcript_label, 248);
+    lv_obj_set_height(m_transcript_label, LV_SIZE_CONTENT);
     lv_label_set_text(m_transcript_label, "");
     lv_obj_set_style_text_font(m_transcript_label, &font_ru_14, 0);
     lv_obj_set_style_text_color(m_transcript_label, lv_color_hex(COLOR_DIM), 0);
     lv_obj_set_style_text_align(m_transcript_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(m_transcript_label, LV_ALIGN_TOP_MID, 0, 22);
+    lv_obj_clear_flag(m_transcript_label, LV_OBJ_FLAG_CLICKABLE);
 
     // Лейбл текста ответа
     m_answer_label = lv_label_create(m_card);
     lv_label_set_long_mode(m_answer_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(m_answer_label, 256);
+    lv_obj_set_width(m_answer_label, 248);
+    lv_obj_set_height(m_answer_label, LV_SIZE_CONTENT);
     lv_label_set_text(m_answer_label, "");
     lv_obj_set_style_text_font(m_answer_label, &font_ru_14, 0);
     lv_obj_set_style_text_color(m_answer_label, lv_color_hex(COLOR_SAND), 0);
     lv_obj_set_style_text_align(m_answer_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(m_answer_label, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_clear_flag(m_answer_label, LV_OBJ_FLAG_CLICKABLE);
 
     hide();
 }
@@ -105,11 +110,9 @@ void CardWidget::set_result(const kouki_voice_result_t& result)
             lv_label_set_text(m_transcript_label, result.transcript);
         }
         lv_obj_clear_flag(m_transcript_label, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(m_answer_label, LV_ALIGN_TOP_MID, 0, 50);
     } else {
         lv_label_set_text(m_transcript_label, "");
         lv_obj_add_flag(m_transcript_label, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(m_answer_label, LV_ALIGN_TOP_MID, 0, 26);
     }
 
     // 3. Текст результата (один heap-буфер вместо больших стековых массивов в main_task)
@@ -132,11 +135,15 @@ void CardWidget::set_result(const kouki_voice_result_t& result)
         m_text_len = static_cast<uint32_t>(strlen(text_buf));
     } else {
         const char* fallback = (result.error[0] != '\0') ? result.error :
-                               ((result.answer[0] != '\0') ? result.answer : result.task_title);
+                               (result.answer[0] != '\0') ? result.answer :
+                               (result.task_title[0] != '\0') ? result.task_title :
+                               (result.command[0] != '\0') ? result.command :
+                               (result.intent[0] != '\0') ? result.intent : "";
         lv_label_set_text(m_answer_label, fallback);
         m_text_len = static_cast<uint32_t>(strlen(fallback));
     }
 
+    lv_obj_update_layout(m_card);
     m_auto_scroll = (m_text_len > 120);
 }
 

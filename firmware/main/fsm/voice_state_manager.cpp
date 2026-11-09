@@ -258,4 +258,39 @@ void VoiceStateManager::publish_state(StateId st, const kouki_voice_result_t *re
     }
 }
 
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+bool VoiceStateManager::force_done_for_test(const kouki_voice_result_t& res) {
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreTakeRecursive(m_lock, portMAX_DELAY);
+#endif
+    if (m_current_id == StateId::Recording || m_current_id == StateId::Sending) {
+#ifdef ESP_PLATFORM
+        if (m_lock) xSemaphoreGiveRecursive(m_lock);
+#endif
+        return false;
+    }
+    if (m_current_state) {
+        m_current_state->on_exit(m_context);
+    }
+    m_context.result = res;
+    m_context.dialogue_continue = false;
+    m_context.is_wake_recording = false;
+    m_previous_id = m_current_id;
+    m_current_id = StateId::Done;
+    m_last_transition_reason = "test_mock_done";
+    m_transition_count++;
+    m_state_entered_time_ms = get_time_ms();
+    size_t idx = static_cast<size_t>(StateId::Done);
+    m_current_state = (idx < m_states.size()) ? m_states[idx] : nullptr;
+    if (m_current_state) {
+        m_current_state->on_enter(m_context, "test_mock_done");
+    }
+    publish_state(m_current_id, &m_context.result);
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreGiveRecursive(m_lock);
+#endif
+    return true;
+}
+#endif
+
 } // namespace kouki::voice

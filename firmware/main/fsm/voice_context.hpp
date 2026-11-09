@@ -39,7 +39,6 @@ struct VoiceContext {
     bool dialogue_continue = false;
 
     uint32_t followup_silence_chunks = 0;
-    uint32_t followup_until_ms = 0;
     uint32_t last_vad_silence_ms = 0;
 
     void reset_recording() noexcept {

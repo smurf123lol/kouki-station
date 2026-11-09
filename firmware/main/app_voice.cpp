@@ -261,4 +261,14 @@ void kouki_voice_print_state(void)
     std::printf("---------------------\n\n");
 }
 
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+esp_err_t kouki_voice_test_mock_done(const kouki_voice_result_t *result)
+{
+    if (!result) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return s_manager.force_done_for_test(*result) ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+#endif
+
 } // extern "C"

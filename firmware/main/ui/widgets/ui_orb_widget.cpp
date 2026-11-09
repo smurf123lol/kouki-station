@@ -15,13 +15,13 @@ OrbWidget::OrbWidget(lv_obj_t* parent)
     lv_obj_clear_flag(m_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(m_container, LV_OBJ_FLAG_CLICKABLE);
 
-    // Wi-Fi точка вверху
+    // Wi-Fi точка вверху (разнесена с мини-сферой SubDone, чтобы не перекрываться)
     m_wifi_dot = lv_obj_create(m_container);
     lv_obj_set_size(m_wifi_dot, 8, 8);
     lv_obj_set_style_radius(m_wifi_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(m_wifi_dot, lv_color_hex(COLOR_DANGER), 0);
     lv_obj_set_style_border_width(m_wifi_dot, 0, 0);
-    lv_obj_align(m_wifi_dot, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(m_wifi_dot, LV_ALIGN_TOP_MID, 0, 11);
     lv_obj_clear_flag(m_wifi_dot, LV_OBJ_FLAG_CLICKABLE);
 
     // Главное кольцо сферы (диаметр 260px в нормальном состоянии)
@@ -177,9 +177,9 @@ void OrbWidget::set_mode(UiVoiceSubStateId mode)
         break;
 
     case UiVoiceSubStateId::SUB_DONE:
-        // Мини-сфера вверху экрана
+        // Мини-сфера вверху экрана (центр y=42: ниже Wi-Fi точки y=11..19 и выше карточки y=65)
         lv_obj_set_size(m_ring, 32, 32);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
         lv_obj_set_style_border_color(m_ring, lv_color_hex(COLOR_SAND), 0);
         lv_obj_set_style_border_width(m_ring, 3, 0);
         lv_obj_clear_flag(m_ring, LV_OBJ_FLAG_HIDDEN);
@@ -262,23 +262,12 @@ void OrbWidget::update_recording_metrics(uint32_t duration_ms, bool speech_detec
     }
 
     // Плавная интерполяция тишины между 64-мс шагами record_task + геп перед появлением дуги
-    if (!speech_detected || silence_ms == 0 || silence_limit_ms == 0) {
-        m_last_metric_silence_ms = 0;
-        m_display_silence_ms = 0;
-    } else if (silence_ms != m_last_metric_silence_ms) {
-        m_last_metric_silence_ms = silence_ms;
-        if (silence_ms > m_display_silence_ms ||
-            (m_display_silence_ms - silence_ms) > VAD_INTERP_MAX_AHEAD_MS) {
-            m_display_silence_ms = silence_ms;
-        }
-    } else {
-        uint32_t cap = silence_ms + VAD_INTERP_MAX_AHEAD_MS;
-        if (cap > silence_limit_ms) {
-            cap = silence_limit_ms;
-        }
-        const uint32_t adv = m_display_silence_ms + m_last_dt_ms;
-        m_display_silence_ms = (adv > cap) ? cap : adv;
-    }
+    (void)advance_vad_silence_display(speech_detected,
+                                      silence_ms,
+                                      silence_limit_ms,
+                                      m_last_dt_ms,
+                                      &m_last_metric_silence_ms,
+                                      &m_display_silence_ms);
     m_last_dt_ms = 0;
 
     bool visible = false;
@@ -320,10 +309,10 @@ void OrbWidget::update_speech_pulse(bool is_speaking)
         // Мягкая пульсация мини-сферы при воспроизведении ответа
         int sz = 32 + (int)(sin((double)m_anim_time_ms * 0.008) * 4.0);
         lv_obj_set_size(m_ring, sz, sz);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
     } else {
         lv_obj_set_size(m_ring, 32, 32);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
     }
 }
 

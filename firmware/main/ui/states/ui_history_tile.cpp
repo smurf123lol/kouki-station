@@ -76,11 +76,12 @@ void HistoryTile::reset_inactivity()
 
 void HistoryTile::refresh()
 {
-    // Фиксируем версию до чтения, чтобы не пропустить обновление из фоновой задачи
-    m_last_history_version = kouki_history_version();
+    // Читаем версию до копирования, но фиксируем m_last_history_version только после успешного выделения буфера
+    const uint32_t ver = kouki_history_version();
     const size_t count = kouki_history_count();
 
     if (count == 0) {
+        m_last_history_version = ver;
         lv_obj_clear_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clean(m_list_container);
         return;
@@ -95,6 +96,7 @@ void HistoryTile::refresh()
     if (!scratch) {
         return;
     }
+    m_last_history_version = ver;
 
     lv_obj_add_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clean(m_list_container);

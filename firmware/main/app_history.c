@@ -65,22 +65,13 @@ void kouki_history_push(const kouki_voice_result_t *res)
         return;
     }
 
-    kouki_history_item_t item;
-    memset(&item, 0, sizeof(item));
+    char hm[16] = {0};
+    kouki_time_format_hm(hm, sizeof(hm));
 
-    strncpy(item.transcript, res->transcript, sizeof(item.transcript) - 1);
-    strncpy(item.title, res->task_title, sizeof(item.title) - 1);
-    strncpy(item.answer, res->answer, sizeof(item.answer) - 1);
-    strncpy(item.outcome, res->outcome, sizeof(item.outcome) - 1);
-
-    kouki_time_format_hm(item.timestamp_hm, sizeof(item.timestamp_hm));
-
-    if (strcmp(res->outcome, "created") == 0 || res->task_title[0] != '\0' || strstr(res->intent, "task") != NULL) {
-        item.is_task = true;
-    }
-    if (res->answer[0] != '\0' || strcmp(res->intent, "ask") == 0) {
-        item.is_answer = true;
-    }
+    const bool is_task = (strcmp(res->outcome, "created") == 0 ||
+                          res->task_title[0] != '\0' ||
+                          strstr(res->intent, "task") != NULL);
+    const bool is_answer = (res->answer[0] != '\0' || strcmp(res->intent, "ask") == 0);
 
 #ifdef ESP_PLATFORM
     if (s_history_mutex) {
@@ -88,7 +79,17 @@ void kouki_history_push(const kouki_voice_result_t *res)
     }
 #endif
 
-    s_items[s_head] = item;
+    kouki_history_item_t *slot = &s_items[s_head];
+    memset(slot, 0, sizeof(*slot));
+
+    strncpy(slot->transcript, res->transcript, sizeof(slot->transcript) - 1);
+    strncpy(slot->title, res->task_title, sizeof(slot->title) - 1);
+    strncpy(slot->answer, res->answer, sizeof(slot->answer) - 1);
+    strncpy(slot->outcome, res->outcome, sizeof(slot->outcome) - 1);
+    strncpy(slot->timestamp_hm, hm, sizeof(slot->timestamp_hm) - 1);
+    slot->is_task = is_task;
+    slot->is_answer = is_answer;
+
     s_head = (s_head + 1) % KOUKI_HISTORY_CAPACITY;
     if (s_count < KOUKI_HISTORY_CAPACITY) {
         s_count++;
@@ -96,11 +97,17 @@ void kouki_history_push(const kouki_voice_result_t *res)
     atomic_fetch_add_explicit(&s_version, 1, memory_order_release);
 
 #ifdef ESP_PLATFORM
+    const size_t total = s_count;
+    char preview[64];
+    const char *src = slot->transcript[0] ? slot->transcript : slot->answer;
+    strncpy(preview, src, sizeof(preview) - 1);
+    preview[sizeof(preview) - 1] = '\0';
+
     if (s_history_mutex) {
         xSemaphoreGive(s_history_mutex);
     }
     ESP_LOGI(TAG, "Добавлена запись в историю (всего: %u): '%s'",
-             (unsigned)s_count, item.transcript[0] ? item.transcript : item.answer);
+             (unsigned)total, preview);
 #endif
 }
 

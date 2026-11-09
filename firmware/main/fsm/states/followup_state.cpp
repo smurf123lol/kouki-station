@@ -78,8 +78,10 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
             return StateId::Recording;
         }
 
-        // 2) Проверяем устойчивое начало речи (минимум 2 громких чанка подряд ~128 мс)
-        const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE * 3) / 2;
+        // 2) Проверяем устойчивое начало речи (минимум 2 громких чанка подряд ~128 мс, порог 2x от пола тишины)
+        const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE > 0)
+            ? static_cast<uint32_t>(CONFIG_KOUKI_MIN_AMPLITUDE) * 2U
+            : 1U;
         if (evaluate_speech_chunk(pcm, samples, speech_chunk_th)) {
             ctx.session = KOUKI_SESSION_ASK;
             ctx.dialogue_continue = true;
