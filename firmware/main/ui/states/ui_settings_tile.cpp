@@ -184,19 +184,25 @@ SettingsTile::SettingsTile(lv_obj_t* parent, UiStateManager* manager)
     uint8_t current_sens = kouki_config_get_wake_threshold();
     m_wake_sens_label = lv_label_create(m_scroll_container);
     char sens_buf[40];
-    snprintf(sens_buf, sizeof(sens_buf), "Чувствительность: %u%%", (unsigned)current_sens);
+    snprintf(sens_buf, sizeof(sens_buf), "Порог уверенности: %u%%", (unsigned)current_sens);
     lv_label_set_text(m_wake_sens_label, sens_buf);
     lv_obj_set_style_text_font(m_wake_sens_label, &font_ru_14, 0);
     lv_obj_set_style_text_color(m_wake_sens_label, lv_color_hex(COLOR_DIM), 0);
 
     m_wake_slider = lv_slider_create(m_scroll_container);
     lv_obj_set_width(m_wake_slider, 270);
-    lv_slider_set_range(m_wake_slider, 10, 95);
+    /* Ниже — чувствительнее (детектор срабатывает на меньшую уверенность). */
+    lv_slider_set_range(m_wake_slider, 35, 90);
     lv_slider_set_value(m_wake_slider, current_sens, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_KNOB);
     lv_obj_add_event_cb(m_wake_slider, on_wake_sens_changed, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(m_wake_slider, on_wake_sens_released, LV_EVENT_RELEASED, this);
+
+    lv_obj_t* wake_hint = lv_label_create(m_scroll_container);
+    lv_label_set_text(wake_hint, "Меньше — чувствительнее; 65 — баланс");
+    lv_obj_set_style_text_font(wake_hint, &font_ru_14, 0);
+    lv_obj_set_style_text_color(wake_hint, lv_color_hex(COLOR_DIM), 0);
 
     // 3. Секция: Режим тишины
     lv_obj_t* silent_row = lv_obj_create(m_scroll_container);
@@ -284,7 +290,7 @@ void SettingsTile::update_wake_sens_label(int val)
 {
     if (m_wake_sens_label != nullptr) {
         char buf[40];
-        snprintf(buf, sizeof(buf), "Чувствительность: %d%%", val);
+        snprintf(buf, sizeof(buf), "Порог уверенности: %d%%", val);
         lv_label_set_text(m_wake_sens_label, buf);
     }
 }

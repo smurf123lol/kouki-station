@@ -13,6 +13,25 @@
 
 namespace kouki::voice {
 
+void FollowupState::push_preroll(const int16_t *pcm, size_t samples) noexcept {
+    if (!pcm || samples == 0) {
+        return;
+    }
+    if (samples >= FOLLOWUP_PREROLL_SAMPLES) {
+        std::memcpy(m_preroll, pcm + (samples - FOLLOWUP_PREROLL_SAMPLES),
+                    FOLLOWUP_PREROLL_SAMPLES * sizeof(int16_t));
+        m_preroll_len = FOLLOWUP_PREROLL_SAMPLES;
+        return;
+    }
+    if (m_preroll_len + samples > FOLLOWUP_PREROLL_SAMPLES) {
+        const size_t drop = m_preroll_len + samples - FOLLOWUP_PREROLL_SAMPLES;
+        std::memmove(m_preroll, m_preroll + drop, (m_preroll_len - drop) * sizeof(int16_t));
+        m_preroll_len -= drop;
+    }
+    std::memcpy(m_preroll + m_preroll_len, pcm, samples * sizeof(int16_t));
+    m_preroll_len += samples;
+}
+
 bool FollowupState::evaluate_speech_chunk(const int16_t *pcm, size_t samples, uint32_t /*threshold*/) noexcept {
     kouki_vad_process(pcm, samples);
     m_loud_streak = kouki_vad_get_speech_streak();
@@ -23,6 +42,9 @@ void FollowupState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     m_cancel_requested = false;
     m_start_requested = false;
     m_loud_streak = 0;
+    m_preroll_len = 0;
+    ctx.pending_preroll = nullptr;
+    ctx.pending_preroll_samples = 0;
     ctx.dialogue_continue = false;
     kouki_vad_reset();
 
@@ -72,6 +94,10 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
     }
 
     if (pcm && samples > 0) {
+        // Копим предзапись: если сейчас начнётся продолжение, первые слова
+        // не пропадут (VAD подтверждает речь с задержкой около 300–400 мс).
+        push_preroll(pcm, samples);
+
         // 1) Проверяем кодовое слово «эй гин»
         if (kouki_wake_is_ready() && kouki_wake_feed(pcm, static_cast<int>(samples))) {
             ctx.is_wake_recording = true;
@@ -85,6 +111,8 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
             ctx.session = KOUKI_SESSION_ASK;
             ctx.dialogue_continue = true;
             ctx.is_wake_recording = false;
+            ctx.pending_preroll = m_preroll;
+            ctx.pending_preroll_samples = m_preroll_len;
             return StateId::Recording;
         }
     }
@@ -106,6 +134,7 @@ void FollowupState::on_exit(VoiceContext& /*ctx*/) {
     m_cancel_requested = false;
     m_start_requested = false;
     m_loud_streak = 0;
+    m_preroll_len = 0;
 }
 
 } // namespace kouki::voice

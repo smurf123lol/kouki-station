@@ -62,6 +62,7 @@ void SendingState::send_worker_task(void *arg) {
     local_res.duration_ms = duration_ms;
 
     if (!kouki_wifi_is_connected()) {
+        ESP_LOGW(TAG, "отправка отменена: Wi-Fi не подключён");
         std::strncpy(local_res.error, "Нет сети", sizeof(local_res.error) - 1);
         local_res.error[sizeof(local_res.error) - 1] = '\0';
         if (self->m_gen.load(std::memory_order_acquire) == gen && !self->m_cancelled.load(std::memory_order_acquire)) {
@@ -308,6 +309,7 @@ void SendingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
         std::strncpy(ctx.result.error, "Тишина: слишком тихо, повторите ближе к микрофону",
                      sizeof(ctx.result.error) - 1);
         ctx.result.error[sizeof(ctx.result.error) - 1] = '\0';
+        ESP_LOGW(TAG, "отправка отклонена: тихий записанный буфер");
         notify_complete(StateId::Error);
         return;
     }
@@ -328,6 +330,7 @@ void SendingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
         delete worker_ctx;
         std::strncpy(ctx.result.error, "Не удалось запустить отправку", sizeof(ctx.result.error) - 1);
         ctx.result.error[sizeof(ctx.result.error) - 1] = '\0';
+        ESP_LOGE(TAG, "не удалось создать задачу отправки (heap?)");
         notify_complete(StateId::Error);
     }
 #else

@@ -93,8 +93,9 @@ export IDF_COMPONENT_STORAGE_PATH="${IDF_COMPONENT_STORAGE_PATH:-$WORKSPACE/_scr
 export CCACHE_DIR="${CCACHE_DIR:-$WORKSPACE/_scratch/ccache}"
 export IDF_PATH IDF_TOOLS_PATH
 # shellcheck source=/dev/null
-. "$IDF_PATH/export.sh" >/tmp/kouki-idf-export.log 2>&1 ||
-    { tail -5 /tmp/kouki-idf-export.log >&2; die "export.sh завершился с ошибкой (см. /tmp/kouki-idf-export.log)"; }
+IDF_EXPORT_LOG="${TMPDIR:-/tmp}/kouki-idf-export-$$.log"
+. "$IDF_PATH/export.sh" >"$IDF_EXPORT_LOG" 2>&1 ||
+    { tail -5 "$IDF_EXPORT_LOG" >&2; die "export.sh завершился с ошибкой (см. $IDF_EXPORT_LOG)"; }
 command -v idf.py >/dev/null || die "export.sh прошёл, но idf.py не появился в PATH (проверьте IDF_TOOLS_PATH)"
 
 cd "$FIRMWARE"

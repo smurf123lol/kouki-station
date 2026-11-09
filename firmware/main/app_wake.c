@@ -55,6 +55,15 @@ static int16_t s_frame_peak[WAKE_MODEL_FRAMES];
 static int16_t s_step_peak = 0;
 static int s_consecutive_hits = 0;
 
+/* Кольцевой буфер последних ~1 с PCM. Нужен для двух вещей:
+   1) подмешать начало записи, чтобы не потерять «эй гин» и первый слог команды;
+   2) отправить этот же кусок на ASR-подтверждение, когда локальный хит похож
+      на ложный (телевизор, разговор рядом). */
+#define KOUKI_WAKE_PREROLL_SAMPLES 16000
+static int16_t s_preroll[KOUKI_WAKE_PREROLL_SAMPLES];
+static size_t s_preroll_len = 0;
+static size_t s_preroll_write = 0;
+
 static SemaphoreHandle_t wake_lock_get(void)
 {
     if (s_wake_mutex != NULL) {
@@ -188,7 +197,51 @@ esp_err_t kouki_wake_init(void)
     ESP_LOGI(TAG, "детектор «эй гин» готов: microWakeWord INT8 (%u байт), порог %u%% (%.2f), окно %d с",
              (unsigned)WAKE_MODEL_EY_GIN_LEN, (unsigned)th, (double)th / 100.0, 1);
 
+    /* Первые секунды после старта — щелчки включения и DC-переход микрофона;
+       на пороге 65 % они дают ложный хит. Глушим детектор, пока тракт не уляжется. */
+    kouki_wake_mute(2500);
+
     return ESP_OK;
+}
+
+int kouki_wake_get_preroll(int16_t *dst, int max_samples)
+{
+    if (!dst || max_samples <= 0) {
+        return 0;
+    }
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx == NULL) {
+        return 0;
+    }
+    xSemaphoreTake(mtx, portMAX_DELAY);
+
+    int n = (int)s_preroll_len;
+    if (n > max_samples) {
+        n = max_samples;
+    }
+    const size_t start = (s_preroll_write + KOUKI_WAKE_PREROLL_SAMPLES - (size_t)n) % KOUKI_WAKE_PREROLL_SAMPLES;
+    const size_t first = KOUKI_WAKE_PREROLL_SAMPLES - start;
+    if ((size_t)n <= first) {
+        memcpy(dst, &s_preroll[start], (size_t)n * sizeof(int16_t));
+    } else {
+        memcpy(dst, &s_preroll[start], first * sizeof(int16_t));
+        memcpy(dst + first, s_preroll, ((size_t)n - first) * sizeof(int16_t));
+    }
+
+    xSemaphoreGive(mtx);
+    return n;
+}
+
+void kouki_wake_preroll_clear(void)
+{
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx == NULL) {
+        return;
+    }
+    xSemaphoreTake(mtx, portMAX_DELAY);
+    s_preroll_len = 0;
+    s_preroll_write = 0;
+    xSemaphoreGive(mtx);
 }
 
 void kouki_wake_reset(void)
@@ -316,6 +369,26 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
         return false;
     }
 
+    /* Буфер предзаписи наполняем всегда, когда детектор не заглушён. */
+    {
+        size_t n = (size_t)samples;
+        const int16_t *src = pcm;
+        while (n > 0) {
+            const size_t space = KOUKI_WAKE_PREROLL_SAMPLES - s_preroll_write;
+            const size_t take = (n < space) ? n : space;
+            memcpy(&s_preroll[s_preroll_write], src, take * sizeof(int16_t));
+            s_preroll_write = (s_preroll_write + take) % KOUKI_WAKE_PREROLL_SAMPLES;
+            if (s_preroll_len < KOUKI_WAKE_PREROLL_SAMPLES) {
+                s_preroll_len += take;
+                if (s_preroll_len > KOUKI_WAKE_PREROLL_SAMPLES) {
+                    s_preroll_len = KOUKI_WAKE_PREROLL_SAMPLES;
+                }
+            }
+            src += take;
+            n -= take;
+        }
+    }
+
     SemaphoreHandle_t mtx = wake_lock_get();
     if (mtx == NULL) {
         return false;
@@ -398,6 +471,11 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                 }
 
                 float prob = wake_model_ey_gin_infer(s_norm_spec, s_infer_arena);
+
+                /* Диагностика: видно почти-срабатывания, по ним подбирается порог. */
+                if (prob >= 0.5f) {
+                    ESP_LOGD(TAG, "wake prob=%.3f (порог %.2f)", (double)prob, (double)threshold);
+                }
 
                 bool hit = false;
                 if (prob >= threshold) {
