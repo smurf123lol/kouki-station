@@ -42,10 +42,6 @@ void kouki_tone_play(kouki_tone_t tone)
 static const char *TAG = "kouki.tone";
 
 #define TONE_SAMPLE_RATE   16000
-
-/* Хвост тишины после сигнала: 0,25 с стереопары при 16 кГц. */
-#define TONE_TAIL_FRAMES 4000u
-static int16_t s_tone_tail[TONE_TAIL_FRAMES * 2u];
 #define TONE_FADE_MS       5
 #define TONE_FADE_SAMPLES  (TONE_SAMPLE_RATE * TONE_FADE_MS / 1000)
 #define TONE_PI            3.14159265358979323846f
@@ -284,22 +280,11 @@ void kouki_tone_play(kouki_tone_t tone)
      * frames * 2 канала * sizeof(int16_t). bsp_audio_play при 16-битном
      * режиме разворачивает каждый int16 в int32 и сам удваивает length,
      * ожидая на входе чередующиеся L/R (bsp_board.c:359-416).
+     * Воспроизведение через kouki_audio_play_with_tail под leaf-lock с гарантированной
+     * продувкой DMA тишиной (80 мс), исключающей повторы тона в кольцевом буфере.
      */
     const int bytes = (int)(frames * 2u * sizeof(int16_t));
-    kouki_audio_out_lock();
-    const esp_err_t play_err = esp_audio_play(pcm, bytes, portMAX_DELAY);
-
-    /*
-     * Хвост тишины: DMA проигрывает последний буфер ещё раз, и короткий тон
-     * без паузы зацикливается (слышно как «дррр» вместо «пип»). 0,25 с
-     * стереопары = 4000 кадров; буфер статический и нулевой.
-     * Полный хвост тишины нужен для всех сигналов (включая START и WAKE),
-     * иначе остаток DMA-дескрипторов не вытесняется нулями и зацикливает звук.
-     */
-    if (play_err == ESP_OK) {
-        esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);
-    }
-    kouki_audio_out_unlock();
+    const esp_err_t play_err = kouki_audio_play_with_tail(pcm, bytes, 80, portMAX_DELAY);
 
     /* esp_audio_play пишет в кодек блокирующе — буферу он больше не нужен. */
     free(pcm);

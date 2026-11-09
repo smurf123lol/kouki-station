@@ -83,15 +83,6 @@ void kouki_speech_abort(void)
 /* Стерео занимает вдвое больше: моно разворачиваем внутри того же буфера. */
 #define SPEECH_BUF_CAP (2u * SPEECH_READ_CAP)
 
-/*
- * Хвост тишины после речи: DMA проигрывает последний буфер ещё раз, и без
- * паузы ответ заканчивается повтором последнего слога (та же ловушка, что
- * описана в docs/decisions.md для сигналов). 4800 кадров = 0,3 с при 16 кГц;
- * буфер статический и нулевой, в PSRAM его держать незачем.
- */
-#define SPEECH_TAIL_FRAMES 4800u
-static int16_t s_tail[SPEECH_TAIL_FRAMES * 2u];
-
 #define SPEECH_CHUNK_FRAMES 1600u /* 100 мс стерео (6400 Б) */
 
 static atomic_uint_fast32_t s_latest_gen;
@@ -140,6 +131,7 @@ void kouki_speech_abort(void)
                                                    memory_order_release,
                                                    memory_order_relaxed)) {
     }
+    kouki_audio_out_abort();
 }
 
 static uint16_t rd_le16(const uint8_t *p)
@@ -736,15 +728,16 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
             ESP_LOGI(TAG, "озвучивание прервано или завершилось (%s)", esp_err_to_name(err));
             break;
         }
+
+        /* Межфразовая пауза: продувает DMA нулями и даёт естественную пунктуацию речи (150 мс) */
+        if (*p != '\0' && !speech_is_gen_aborted(gen)) {
+            kouki_audio_play_silence(150, portMAX_DELAY);
+        }
     }
 
     if (played_any && err == ESP_OK && !speech_is_gen_aborted(gen)) {
-        /* Пауза после речи: закрывает хвост DMA и не даёт повтора */
-        kouki_audio_out_lock();
-        if (!speech_is_gen_aborted(gen)) {
-            esp_audio_play(s_tail, (int)sizeof(s_tail), portMAX_DELAY);
-        }
-        kouki_audio_out_unlock();
+        /* Финальная пауза после речи: закрывает хвост DMA тишиной */
+        kouki_audio_play_silence(250, portMAX_DELAY);
     }
 
     uint_fast32_t exp_active = (uint_fast32_t)gen;
