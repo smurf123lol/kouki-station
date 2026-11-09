@@ -183,7 +183,7 @@ set_wake_th 10`): на штатных 65 % посторонняя речь не 
 ```bash
 /srv/kouki-workspace/_scratch/esp-tools/python_env/idf5.5_py3.14_env/bin/python \
   /srv/kouki-workspace/_scratch/esp-idf/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py \
-  generate /srv/kouki-workspace/_scratch/wt/kouki-station-t120-sim/sim/nvs/net.csv \
+  generate /srv/kouki-workspace/kouki-station/sim/nvs/net.csv \
   /srv/kouki-workspace/_scratch/sim/nvs/net.bin 0x6000
 ```
 
