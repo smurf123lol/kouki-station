@@ -1,4 +1,5 @@
 #include "recording_state.hpp"
+#include "app_vad.h"
 #include <cstring>
 
 #ifdef ESP_PLATFORM
@@ -14,6 +15,9 @@ namespace kouki::voice {
 void RecordingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     ctx.reset_recording();
     ctx.result = {};
+    m_followup_speech_confirmed = false;
+    kouki_vad_reset();
+
     if (ctx.dialogue_continue) {
         ctx.speech_detected = true;
     }
@@ -59,13 +63,13 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
         ctx.sample_bytes += bytes;
     }
 
-    // VAD логика
-    const uint32_t speech_chunk_th = (m_min_amplitude * 3) / 2;
-    const bool is_loud = VoiceContext::is_chunk_loud(pcm, samples, speech_chunk_th);
+    // Спектральная VAD логика: отличает истинную речь от шума
+    const bool is_vad_speech = kouki_vad_process(pcm, samples);
 
     if (ctx.dialogue_continue) {
-        if (is_loud) {
+        if (is_vad_speech) {
             ctx.speech_detected = true;
+            m_followup_speech_confirmed = true;
             ctx.followup_silence_chunks = 0;
             ctx.last_vad_silence_ms = 0;
         } else {
@@ -73,15 +77,37 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
             uint32_t silence_ms = static_cast<uint32_t>(
                 ctx.followup_silence_chunks * (static_cast<uint64_t>(samples) * 1000 / SAMPLE_RATE));
             ctx.last_vad_silence_ms = silence_ms;
+
+            uint32_t total_recorded_ms = static_cast<uint32_t>(
+                (ctx.sample_bytes / BYTES_PER_SAMPLE) * 1000 / SAMPLE_RATE);
+
+            // Если за первые 2500 мс в follow-up речь ни разу не подтвердилась VAD (только шум) —
+            // отменяем запись локально без отправки на сервер и без тона ошибки
+            if (!m_followup_speech_confirmed && total_recorded_ms >= 2500) {
+#ifdef ESP_PLATFORM
+                ESP_LOGI("kouki.fsm", "Follow-up запись отменена: VAD за 2500 мс не обнаружил речь человека");
+#endif
+                ctx.cancel_requested = true;
+                return StateId::Idle;
+            }
+
             if (silence_ms >= m_followup_silence_ms) {
-                return StateId::Sending;
+                if (m_followup_speech_confirmed) {
+                    return StateId::Sending;
+                } else {
+#ifdef ESP_PLATFORM
+                    ESP_LOGI("kouki.fsm", "Follow-up отменен: тишина/шум без подтвержденной речи человека");
+#endif
+                    ctx.cancel_requested = true;
+                    return StateId::Idle;
+                }
             }
         }
     } else {
         // Общая логика VAD для записи по кнопке и по wake-word
         // Игнорируем первые 320 мс (хвост стартового тона)
         const size_t min_speech_start_bytes = 5 * RECORD_CHUNK * BYTES_PER_SAMPLE;
-        if (ctx.sample_bytes >= min_speech_start_bytes && is_loud) {
+        if (ctx.sample_bytes >= min_speech_start_bytes && is_vad_speech) {
             if (!ctx.speech_detected) {
                 ctx.speech_detected = true;
             }

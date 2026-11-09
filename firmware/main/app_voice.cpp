@@ -1,4 +1,5 @@
 #include "app_voice.h"
+#include "app_vad.h"
 #include "fsm/voice_state_manager.hpp"
 #include "fsm/states/idle_state.hpp"
 #include "fsm/states/recording_state.hpp"
@@ -115,6 +116,7 @@ esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
 
     // Инициализируем FSM
     s_manager.init(cb, ctx);
+    kouki_vad_init();
 
 #ifdef ESP_PLATFORM
     if (xTaskCreatePinnedToCore(record_task, "kouki.record", 8192, nullptr, 5, nullptr, 1) != pdPASS) {

@@ -20,6 +20,7 @@ private:
     uint32_t m_vad_silence_ms = 3000;
     uint32_t m_followup_silence_ms = 1500;
     uint32_t m_max_record_ms = 15000;
+    bool m_followup_speech_confirmed = false;
 };
 
 } // namespace kouki::voice

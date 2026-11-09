@@ -40,6 +40,7 @@ struct VoiceContext {
 
     uint32_t followup_silence_chunks = 0;
     uint32_t last_vad_silence_ms = 0;
+    uint32_t followup_streak = 0;
 
     void reset_recording() noexcept {
         sample_bytes = 0;
