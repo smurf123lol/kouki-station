@@ -35,6 +35,13 @@ private:
     uint32_t m_anim_time_ms{0};
     uint16_t m_spinner_rot{0};
     bool m_wifi_connected{false};
+
+    uint32_t m_last_dt_ms{0};
+    uint32_t m_last_metric_silence_ms{0};
+    uint32_t m_display_silence_ms{0};
+    uint32_t m_last_total_sec{UINT32_MAX};
+    uint16_t m_last_arc_angle{0};
+    bool m_arc_visible{false};
 };
 
 } // namespace kouki::ui

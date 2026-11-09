@@ -14,11 +14,11 @@ static const char *TAG = "kouki.ui.mgr";
 
 namespace kouki::ui {
 
-static void on_tile_voice_clicked(lv_event_t* e)
+static void on_tile_voice_event_cb(lv_event_t* e)
 {
     auto* mgr = static_cast<UiStateManager*>(lv_event_get_user_data(e));
     if (mgr != nullptr) {
-        mgr->on_voice_tile_clicked();
+        mgr->on_tile_voice_event(e);
     }
 }
 
@@ -42,6 +42,87 @@ void UiStateManager::on_voice_tile_clicked()
 {
     if (m_current_substate != nullptr) {
         m_current_substate->on_tap(m_ctx);
+    }
+}
+
+void UiStateManager::on_tile_voice_event(lv_event_t* e)
+{
+    if (e == nullptr || lv_event_get_target(e) != m_tile_voice) {
+        return;
+    }
+
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_PRESSED &&
+        code != LV_EVENT_PRESSING &&
+        code != LV_EVENT_PRESS_LOST &&
+        code != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        m_press_active = false;
+        m_press_in_zone = false;
+        m_press_dragged = false;
+        return;
+    }
+
+    lv_indev_t* indev = lv_event_get_indev(e);
+    if (indev == nullptr) {
+        indev = lv_indev_get_act();
+    }
+    if (indev == nullptr) {
+        if (code == LV_EVENT_PRESSED) {
+            m_press_active = false;
+            m_press_in_zone = false;
+            m_press_dragged = false;
+        }
+        return;
+    }
+
+    lv_point_t pt{};
+    lv_indev_get_point(indev, &pt);
+
+    lv_area_t coords{};
+    lv_obj_get_coords(m_tile_voice, &coords);
+    const int cx = (static_cast<int>(coords.x1) + static_cast<int>(coords.x2)) / 2;
+    const int cy = (static_cast<int>(coords.y1) + static_cast<int>(coords.y2)) / 2;
+    const bool done_mode = (m_current_substate != nullptr && m_current_substate->id() == UiVoiceSubStateId::SUB_DONE);
+
+    if (code == LV_EVENT_PRESSED) {
+        m_press_active = true;
+        m_press_dragged = false;
+        m_press_pt_x = pt.x;
+        m_press_pt_y = pt.y;
+        m_press_in_zone = (get_active_tile() == TileId::TILE_VOICE) &&
+                          is_in_voice_tap_zone(static_cast<int>(pt.x) - cx, static_cast<int>(pt.y) - cy, done_mode);
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if (m_press_active && !m_press_dragged) {
+            if (is_drag_beyond_threshold(static_cast<int>(pt.x) - m_press_pt_x, static_cast<int>(pt.y) - m_press_pt_y) ||
+                lv_indev_get_scroll_obj(indev) != nullptr) {
+                m_press_dragged = true;
+            }
+        }
+        return;
+    }
+
+    // LV_EVENT_CLICKED: пропускаем только чистый тап в зоне без свайпа/скролла
+    const bool should_tap = m_press_active &&
+                            m_press_in_zone &&
+                            !m_press_dragged &&
+                            (get_active_tile() == TileId::TILE_VOICE) &&
+                            (lv_indev_get_scroll_obj(indev) == nullptr) &&
+                            !is_drag_beyond_threshold(static_cast<int>(pt.x) - m_press_pt_x, static_cast<int>(pt.y) - m_press_pt_y) &&
+                            is_in_voice_tap_zone(static_cast<int>(pt.x) - cx, static_cast<int>(pt.y) - cy, done_mode);
+
+    m_press_active = false;
+    m_press_in_zone = false;
+    m_press_dragged = false;
+
+    if (should_tap) {
+        on_voice_tile_clicked();
     }
 }
 
@@ -92,8 +173,8 @@ void UiStateManager::init()
     m_ctx.orb = m_orb;
     m_ctx.response_card = m_response_card;
 
-    // Тап по центральному экрану
-    lv_obj_add_event_cb(m_tile_voice, on_tile_voice_clicked, LV_EVENT_CLICKED, this);
+    // Разделение тапа и свайпа по центральному экрану
+    lv_obj_add_event_cb(m_tile_voice, on_tile_voice_event_cb, LV_EVENT_ALL, this);
 
     // Стартуем в подсостоянии SubIdle
     m_current_substate = &m_sub_idle;
@@ -121,6 +202,10 @@ void UiStateManager::transition_to(UiVoiceSubStateId next_state)
     if (m_current_substate != nullptr && m_current_substate->id() == next_state) {
         return;
     }
+
+    m_press_active = false;
+    m_press_in_zone = false;
+    m_press_dragged = false;
 
     if (m_current_substate != nullptr) {
         m_current_substate->on_exit(m_ctx);
@@ -219,9 +304,8 @@ void UiStateManager::step(uint32_t dt_ms)
         return;
     }
 
-    // Получаем текущий снимок состояния голоса и метрик VAD
-    kouki_voice_state_t v_state = KOUKI_VOICE_IDLE;
-    memset(&m_ctx.voice_result, 0, sizeof(m_ctx.voice_result));
+    // Получаем текущий снимок состояния голоса и метрик VAD; если m_lock занят, сохраняем предыдущие значения
+    kouki_voice_state_t v_state = m_last_voice_state;
     kouki_voice_get_snapshot(&v_state, &m_ctx.voice_result);
     kouki_voice_get_metrics(&m_ctx.voice_metrics);
     m_ctx.voice_state = v_state;

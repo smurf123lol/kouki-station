@@ -75,6 +75,7 @@ static void record_task(void *arg)
     while (true) {
         if (read_mic(mono, RECORD_CHUNK) != ESP_OK) {
             vTaskDelay(pdMS_TO_TICKS(10));
+            s_manager.step(nullptr, 0);
             continue;
         }
 
@@ -153,7 +154,7 @@ esp_err_t kouki_voice_start_recording(void)
 #ifdef ESP_PLATFORM
     if (!kouki_wifi_is_connected()) {
         kouki_tone_play(KOUKI_TONE_ERROR);
-        ESP_LOGW(TAG, "запись не начата: нет подключения к Wi-Fi");
+        ESP_LOGW(TAG, "запись не началась: нет подключения к Wi-Fi");
         return ESP_ERR_INVALID_STATE;
     }
 #endif

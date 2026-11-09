@@ -1,6 +1,8 @@
 #include "ui_card_widget.hpp"
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace kouki::ui {
 
@@ -90,12 +92,18 @@ void CardWidget::set_result(const kouki_voice_result_t& result)
         lv_obj_set_style_text_color(m_badge_label, lv_color_hex(COLOR_WARN), 0);
     }
 
+    constexpr size_t SCRATCH_CAP = 1024;
+    std::unique_ptr<char[]> scratch(new (std::nothrow) char[SCRATCH_CAP]);
+
     // 2. Цитата запроса пользователя
     if (result.has_transcript && result.transcript[0] != '\0') {
-        char quote_buf[220];
-        snprintf(quote_buf, sizeof(quote_buf), "«%s»", result.transcript);
-        utf8_trim_tail(quote_buf);
-        lv_label_set_text(m_transcript_label, quote_buf);
+        if (scratch) {
+            snprintf(scratch.get(), 220, "«%s»", result.transcript);
+            utf8_trim_tail(scratch.get());
+            lv_label_set_text(m_transcript_label, scratch.get());
+        } else {
+            lv_label_set_text(m_transcript_label, result.transcript);
+        }
         lv_obj_clear_flag(m_transcript_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(m_answer_label, LV_ALIGN_TOP_MID, 0, 50);
     } else {
@@ -104,23 +112,31 @@ void CardWidget::set_result(const kouki_voice_result_t& result)
         lv_obj_align(m_answer_label, LV_ALIGN_TOP_MID, 0, 26);
     }
 
-    // 3. Текст результата
-    char text_buf[1024] = {0};
-    if (result.error[0] != '\0') {
-        snprintf(text_buf, sizeof(text_buf), "%s", result.error);
-    } else if (result.answer[0] != '\0') {
-        snprintf(text_buf, sizeof(text_buf), "%s", result.answer);
-    } else if (result.task_title[0] != '\0') {
-        snprintf(text_buf, sizeof(text_buf), "Задача: %s", result.task_title);
-    } else if (result.command[0] != '\0') {
-        snprintf(text_buf, sizeof(text_buf), "Команда: %s", result.command);
-    } else if (result.intent[0] != '\0') {
-        snprintf(text_buf, sizeof(text_buf), "Интент: %s", result.intent);
+    // 3. Текст результата (один heap-буфер вместо больших стековых массивов в main_task)
+    if (scratch) {
+        char* text_buf = scratch.get();
+        text_buf[0] = '\0';
+        if (result.error[0] != '\0') {
+            snprintf(text_buf, SCRATCH_CAP, "%s", result.error);
+        } else if (result.answer[0] != '\0') {
+            snprintf(text_buf, SCRATCH_CAP, "%s", result.answer);
+        } else if (result.task_title[0] != '\0') {
+            snprintf(text_buf, SCRATCH_CAP, "Задача: %s", result.task_title);
+        } else if (result.command[0] != '\0') {
+            snprintf(text_buf, SCRATCH_CAP, "Команда: %s", result.command);
+        } else if (result.intent[0] != '\0') {
+            snprintf(text_buf, SCRATCH_CAP, "Интент: %s", result.intent);
+        }
+        utf8_trim_tail(text_buf);
+        lv_label_set_text(m_answer_label, text_buf);
+        m_text_len = static_cast<uint32_t>(strlen(text_buf));
+    } else {
+        const char* fallback = (result.error[0] != '\0') ? result.error :
+                               ((result.answer[0] != '\0') ? result.answer : result.task_title);
+        lv_label_set_text(m_answer_label, fallback);
+        m_text_len = static_cast<uint32_t>(strlen(fallback));
     }
-    utf8_trim_tail(text_buf);
-    lv_label_set_text(m_answer_label, text_buf);
 
-    m_text_len = static_cast<uint32_t>(strlen(text_buf));
     m_auto_scroll = (m_text_len > 120);
 }
 

@@ -1,8 +1,9 @@
 #include "app_history.h"
 
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include "app_time.h"
 
 #ifdef ESP_PLATFORM
@@ -18,6 +19,7 @@ static SemaphoreHandle_t s_history_mutex = NULL;
 static kouki_history_item_t *s_items = NULL;
 static size_t s_head = 0;   // Следующая позиция для записи
 static size_t s_count = 0;  // Текущее число элементов (0..KOUKI_HISTORY_CAPACITY)
+static atomic_uint_fast32_t s_version = ATOMIC_VAR_INIT(0);
 
 void kouki_history_init(void)
 {
@@ -49,6 +51,7 @@ void kouki_history_init(void)
 
     s_head = 0;
     s_count = 0;
+    atomic_store_explicit(&s_version, 0, memory_order_release);
 }
 
 void kouki_history_push(const kouki_voice_result_t *res)
@@ -90,6 +93,7 @@ void kouki_history_push(const kouki_voice_result_t *res)
     if (s_count < KOUKI_HISTORY_CAPACITY) {
         s_count++;
     }
+    atomic_fetch_add_explicit(&s_version, 1, memory_order_release);
 
 #ifdef ESP_PLATFORM
     if (s_history_mutex) {
@@ -115,6 +119,11 @@ size_t kouki_history_count(void)
     }
 #endif
     return count;
+}
+
+uint32_t kouki_history_version(void)
+{
+    return (uint32_t)atomic_load_explicit(&s_version, memory_order_acquire);
 }
 
 bool kouki_history_get(size_t index, kouki_history_item_t *out_item)
@@ -164,6 +173,7 @@ void kouki_history_clear(void)
     if (s_items) {
         memset(s_items, 0, sizeof(kouki_history_item_t) * KOUKI_HISTORY_CAPACITY);
     }
+    atomic_fetch_add_explicit(&s_version, 1, memory_order_release);
 
 #ifdef ESP_PLATFORM
     if (s_history_mutex) {

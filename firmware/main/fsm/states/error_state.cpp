@@ -8,8 +8,9 @@
 
 namespace kouki::voice {
 
-void ErrorState::on_enter(VoiceContext& /*ctx*/, const char* /*reason*/) {
+void ErrorState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     m_dismissed = false;
+    ctx.dialogue_continue = false;
 #ifdef ESP_PLATFORM
     kouki_tone_play(KOUKI_TONE_ERROR);
     uint64_t now = static_cast<uint64_t>(esp_timer_get_time() / 1000);

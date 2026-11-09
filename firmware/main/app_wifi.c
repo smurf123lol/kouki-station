@@ -1,5 +1,6 @@
 #include "app_wifi.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "app_config.h"
@@ -19,7 +20,8 @@ static const char *TAG = "kouki.wifi";
 #define FAILED_BIT    BIT1
 
 static EventGroupHandle_t s_events;
-static bool s_connected;
+static atomic_bool s_connected = ATOMIC_VAR_INIT(false);
+static atomic_uint_fast32_t s_state_seq = ATOMIC_VAR_INIT(0);
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -29,19 +31,21 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        s_connected = false;
+        atomic_store_explicit(&s_connected, false, memory_order_release);
+        atomic_fetch_add_explicit(&s_state_seq, 1, memory_order_release);
         ESP_LOGW(TAG, "соединение потеряно, пробуем снова");
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "адрес получен: " IPSTR, IP2STR(&event->ip_info.ip));
-        s_connected = true;
         if (event->ip_info.gw.addr != 0) {
             char gw_str[16] = {0};
             esp_ip4addr_ntoa(&event->ip_info.gw, gw_str, sizeof(gw_str));
             kouki_time_set_fallback_server(gw_str);
         }
         kouki_time_init(NULL);
+        atomic_store_explicit(&s_connected, true, memory_order_release);
+        atomic_fetch_add_explicit(&s_state_seq, 1, memory_order_release);
         xEventGroupSetBits(s_events, CONNECTED_BIT);
     }
 }
@@ -111,12 +115,17 @@ esp_err_t kouki_wifi_connect(void)
 
 bool kouki_wifi_is_connected(void)
 {
-    return s_connected;
+    return atomic_load_explicit(&s_connected, memory_order_acquire);
+}
+
+uint32_t kouki_wifi_state_seq(void)
+{
+    return (uint32_t)atomic_load_explicit(&s_state_seq, memory_order_acquire);
 }
 
 esp_err_t kouki_wifi_get_info(char *ip_buf, size_t ip_len, int8_t *rssi)
 {
-    if (!s_connected) {
+    if (!kouki_wifi_is_connected()) {
         if (ip_buf != NULL && ip_len > 0) {
             ip_buf[0] = '\0';
         }

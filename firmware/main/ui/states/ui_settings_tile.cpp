@@ -273,6 +273,9 @@ void SettingsTile::update_wake_sens_label(int val)
 
 void SettingsTile::refresh_wifi()
 {
+    m_last_wifi_seq = kouki_wifi_state_seq();
+    m_wifi_poll_ms = 0;
+
     char ip[24] = {0};
     int8_t rssi = 0;
     const char* ssid = kouki_config_get_wifi_ssid();
@@ -299,16 +302,20 @@ void SettingsTile::reset_inactivity()
 
 void SettingsTile::step(uint32_t dt_ms)
 {
+    const bool is_active = (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_SETTINGS);
+    const uint32_t wifi_seq = kouki_wifi_state_seq();
+    const bool need_immediate = (wifi_seq != m_last_wifi_seq) || (is_active && !m_was_active);
+    m_was_active = is_active;
+
     m_wifi_poll_ms += dt_ms;
-    if (m_wifi_poll_ms >= 5000) {
-        m_wifi_poll_ms = 0;
+    if (need_immediate || m_wifi_poll_ms >= WIFI_RSSI_POLL_MS) {
         refresh_wifi();
     }
 
     // Автовозврат на главный экран через 20 секунд неактивности
-    if (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_SETTINGS) {
+    if (is_active) {
         m_inactivity_ms += dt_ms;
-        if (m_inactivity_ms >= 20000) {
+        if (m_inactivity_ms >= TILE_INACTIVITY_MS) {
             m_inactivity_ms = 0;
             m_manager->focus_voice_tile(true);
         }

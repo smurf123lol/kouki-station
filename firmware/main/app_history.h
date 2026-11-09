@@ -39,6 +39,11 @@ void kouki_history_push(const kouki_voice_result_t *res);
 size_t kouki_history_count(void);
 
 /**
+ * @brief Возвращает монотонный счётчик изменений истории (для O(1)-проверки в UI без копирования элемента).
+ */
+uint32_t kouki_history_version(void);
+
+/**
  * @brief Извлекает запись по индексу:
  * index = 0 — самая свежая запись, index = 1 — предыдущая, и т.д.
  * 

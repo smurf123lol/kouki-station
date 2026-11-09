@@ -46,6 +46,7 @@ struct VoiceContext {
         sample_bytes = 0;
         speech_detected = false;
         silence_chunks = 0;
+        followup_silence_chunks = 0;
         stop_requested = false;
         cancel_requested = false;
         last_vad_silence_ms = 0;

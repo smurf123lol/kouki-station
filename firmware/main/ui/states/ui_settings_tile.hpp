@@ -34,6 +34,8 @@ private:
     UiStateManager* m_manager{nullptr};
     uint32_t m_inactivity_ms{0};
     uint32_t m_wifi_poll_ms{0};
+    uint32_t m_last_wifi_seq{0};
+    bool m_was_active{false};
 };
 
 } // namespace kouki::ui

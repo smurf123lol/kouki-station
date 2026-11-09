@@ -22,6 +22,7 @@ void RecordingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     kouki_power_notify_activity();
     m_min_amplitude = CONFIG_KOUKI_MIN_AMPLITUDE;
     m_vad_silence_ms = 3000;
+    m_followup_silence_ms = CONFIG_KOUKI_FOLLOWUP_SILENCE_MS;
     m_max_record_ms = CONFIG_KOUKI_MAX_RECORD_S * 1000;
     m_record_start_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
 
@@ -31,6 +32,7 @@ void RecordingState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
         kouki_tone_play(KOUKI_TONE_START);
     }
 #else
+    m_followup_silence_ms = 1500;
     m_record_start_ms = 0;
 #endif
 }
@@ -71,7 +73,7 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
             uint32_t silence_ms = static_cast<uint32_t>(
                 ctx.followup_silence_chunks * (static_cast<uint64_t>(samples) * 1000 / SAMPLE_RATE));
             ctx.last_vad_silence_ms = silence_ms;
-            if (silence_ms >= 1500) {
+            if (silence_ms >= m_followup_silence_ms) {
                 return StateId::Sending;
             }
         }
@@ -130,6 +132,7 @@ void RecordingState::on_exit(VoiceContext& ctx) {
     ctx.stop_requested = false;
     ctx.speech_detected = false;
     ctx.silence_chunks = 0;
+    ctx.followup_silence_chunks = 0;
 
     if (ctx.sample_bytes > 0 && !ctx.cancel_requested) {
         ctx.write_wav_header();

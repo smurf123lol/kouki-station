@@ -10,6 +10,8 @@
 
 namespace kouki::voice {
 
+constexpr uint64_t DONE_CARD_HOLD_MS = 2500;
+
 class DoneState final : public VoiceStateBase {
 public:
     const char* name() const noexcept override { return "DONE"; }
@@ -25,9 +27,10 @@ private:
     static void speech_worker_task(void *arg);
     TaskHandle_t m_task_handle{nullptr};
 #endif
-    char m_answer_text[512]{};
+    std::atomic<uint32_t> m_speech_gen{0};
     std::atomic<bool> m_speech_started{false};
     std::atomic<bool> m_speech_finished{false};
+    std::atomic<bool> m_speech_ok{false};
     std::atomic<bool> m_interrupted{false};
     std::atomic<StateId> m_next_on_interrupt{StateId::Idle};
     uint64_t m_entered_ms = 0;
