@@ -101,7 +101,9 @@ typedef struct {
 } kouki_voice_metrics_t;
 
 /* Текущее состояние — для отрисовки из LVGL-таймера. */
-void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
+kouki_voice_state_t kouki_voice_get_state(void);
+esp_err_t kouki_voice_dismiss_error(void);
+bool kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
 
 /* Метрики записи и VAD — для отрисовки дуги затухания и таймингов в UI. */
 void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics);

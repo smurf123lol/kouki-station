@@ -5,6 +5,7 @@
 #include "app_time.h"
 #include "app_wifi.h"
 #include "app_speech.h"
+#include "app_voice.h"
 #include "esp_log.h"
 
 static const char *TAG = "kouki.ui.states";
@@ -269,6 +270,7 @@ void SubErrorState::step(UiContext& ctx, uint32_t dt_ms)
 
 void SubErrorState::on_tap(UiContext& ctx)
 {
+    kouki_voice_dismiss_error();
     if (ctx.manager != nullptr) {
         ctx.manager->transition_to(UiVoiceSubStateId::SUB_IDLE);
     }

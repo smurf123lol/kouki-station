@@ -4,6 +4,14 @@
 #include "ui_types.hpp"
 #include "ui_state_base.hpp"
 #include "states/ui_voice_substates.hpp"
+#include <atomic>
+
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#else
+#include <mutex>
+#endif
 
 namespace kouki::ui {
 
@@ -26,11 +34,13 @@ public:
     void focus_voice_tile(bool anim);
 
     TileId get_active_tile() const;
+    UiVoiceSubStateId get_current_substate_id() const { return m_current_substate ? m_current_substate->id() : UiVoiceSubStateId::SUB_IDLE; }
     void toggle_recording();
     void on_voice_tile_clicked();
     void on_tile_voice_event(lv_event_t* e);
 
     void show_setup(const char* ssid, const char* url);
+    void clear_setup();
     void show_ota_progress(const char* text);
     void clear_ota();
 
@@ -43,7 +53,22 @@ private:
     UiStateManager(const UiStateManager&) = delete;
     UiStateManager& operator=(const UiStateManager&) = delete;
 
+    enum class PendingOtaAction : uint8_t {
+        NONE = 0,
+        SHOW,
+        CLEAR,
+    };
+
     UiVoiceSubStateBase* get_substate(UiVoiceSubStateId id);
+
+    std::atomic<bool> m_ota_requested{false};
+    PendingOtaAction m_pending_ota_action{PendingOtaAction::NONE};
+    char m_pending_ota_text[128]{};
+#ifdef ESP_PLATFORM
+    mutable portMUX_TYPE m_ota_spinlock = portMUX_INITIALIZER_UNLOCKED;
+#else
+    mutable std::mutex m_ota_mutex;
+#endif
 
     lv_obj_t* m_screen{nullptr};
     lv_obj_t* m_tileview{nullptr};

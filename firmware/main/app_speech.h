@@ -45,6 +45,9 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen);
 /* Занята ли станция процессом озвучивания (HTTP-синтез, чанки или хвост DMA) — откладывает запись и OTA. */
 bool kouki_speech_busy(void);
 
+/* Активен ли фоновый воркер речи (предотвращает запуск OTA во время очистки предыдущей фразы). */
+bool kouki_speech_worker_active(void);
+
 /* Проверяет, активно ли воспроизводится PCM-аудио в кодек прямо сейчас (для пульсации UI). */
 bool kouki_speech_is_playing(void);
 

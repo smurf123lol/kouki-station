@@ -3,6 +3,10 @@
 #include "fsm/voice_state_base.hpp"
 #include <atomic>
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
 namespace kouki::voice {
 
 constexpr uint64_t DONE_CARD_HOLD_MS = 2500;
@@ -18,7 +22,7 @@ public:
     void on_exit(VoiceContext& ctx) override;
 
 private:
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && defined(CONFIG_KOUKI_SPEECH_ENABLED)
     static void speech_worker_task(void *arg);
 #endif
     std::atomic<uint32_t> m_speech_gen{0};

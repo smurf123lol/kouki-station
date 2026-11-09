@@ -52,7 +52,15 @@ void UiModalScreens::show_setup(const char* ssid, const char* url)
              url != nullptr ? url : "192.168.4.1");
     lv_label_set_text(m_setup_text, buf);
     lv_obj_clear_flag(m_setup_overlay, LV_OBJ_FLAG_HIDDEN);
-    m_setup_active = true;
+    m_setup_active.store(true, std::memory_order_release);
+}
+
+void UiModalScreens::clear_setup()
+{
+    m_setup_active.store(false, std::memory_order_release);
+    if (m_setup_overlay != nullptr) {
+        lv_obj_add_flag(m_setup_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void UiModalScreens::show_ota(const char* text)
@@ -94,12 +102,12 @@ void UiModalScreens::show_ota(const char* text)
         lv_label_set_text(m_ota_text, text);
     }
     lv_obj_clear_flag(m_ota_overlay, LV_OBJ_FLAG_HIDDEN);
-    m_ota_active = true;
+    m_ota_active.store(true, std::memory_order_release);
 }
 
 void UiModalScreens::clear_ota()
 {
-    m_ota_active = false;
+    m_ota_active.store(false, std::memory_order_release);
     if (m_ota_overlay != nullptr) {
         lv_obj_add_flag(m_ota_overlay, LV_OBJ_FLAG_HIDDEN);
     }

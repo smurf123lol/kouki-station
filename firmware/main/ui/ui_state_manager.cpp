@@ -7,6 +7,7 @@
 #include "app_voice.h"
 #include "app_speech.h"
 #include "esp_log.h"
+#include <cstdio>
 
 static const char *TAG = "kouki.ui.mgr";
 
@@ -249,12 +250,15 @@ TileId UiStateManager::get_active_tile() const
 
 void UiStateManager::toggle_recording()
 {
-    if (m_modal_screens != nullptr && m_modal_screens->is_active()) {
+    if (m_ota_requested.load(std::memory_order_acquire) ||
+        (m_modal_screens != nullptr && m_modal_screens->is_setup_active())) {
         return;
     }
 
     kouki_voice_state_t v_state = m_last_voice_state;
-    kouki_voice_get_snapshot(&v_state, nullptr);
+    if (!kouki_voice_get_snapshot(&v_state, nullptr)) {
+        v_state = kouki_voice_get_state();
+    }
 
     if (v_state == KOUKI_VOICE_RECORDING || kouki_voice_is_recording()) {
         ESP_LOGI(TAG, "останавливаю запись");
@@ -291,18 +295,45 @@ void UiStateManager::show_setup(const char* ssid, const char* url)
     }
 }
 
-void UiStateManager::show_ota_progress(const char* text)
+void UiStateManager::clear_setup()
 {
     if (m_modal_screens != nullptr) {
-        m_modal_screens->show_ota(text);
+        m_modal_screens->clear_setup();
     }
+}
+
+void UiStateManager::show_ota_progress(const char* text)
+{
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+    m_pending_ota_action = PendingOtaAction::SHOW;
+    if (text != nullptr) {
+        std::snprintf(m_pending_ota_text, sizeof(m_pending_ota_text), "%s", text);
+    } else {
+        m_pending_ota_text[0] = '\0';
+    }
+    m_ota_requested.store(true, std::memory_order_release);
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#endif
 }
 
 void UiStateManager::clear_ota()
 {
-    if (m_modal_screens != nullptr) {
-        m_modal_screens->clear_ota();
-    }
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+    m_pending_ota_action = PendingOtaAction::CLEAR;
+    m_pending_ota_text[0] = '\0';
+    m_ota_requested.store(false, std::memory_order_release);
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#endif
 }
 
 void UiStateManager::step(uint32_t dt_ms)
@@ -311,9 +342,39 @@ void UiStateManager::step(uint32_t dt_ms)
         return;
     }
 
-    // Получаем текущий снимок состояния голоса и метрик VAD; если m_lock занят, сохраняем предыдущие значения
+    // Применяем отложенный OTA-экран строго в потоке LVGL (main_task)
+    PendingOtaAction ota_action = PendingOtaAction::NONE;
+    char ota_text[128]{};
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    {
+        std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+        ota_action = m_pending_ota_action;
+        if (ota_action == PendingOtaAction::SHOW) {
+            std::snprintf(ota_text, sizeof(ota_text), "%s", m_pending_ota_text);
+        }
+        m_pending_ota_action = PendingOtaAction::NONE;
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#else
+    }
+#endif
+
+    if (m_modal_screens != nullptr) {
+        if (ota_action == PendingOtaAction::SHOW) {
+            m_modal_screens->show_ota(ota_text[0] != '\0' ? ota_text : nullptr);
+        } else if (ota_action == PendingOtaAction::CLEAR) {
+            m_modal_screens->clear_ota();
+        }
+    }
+
+    // Получаем текущий снимок состояния голоса и метрик VAD; при таймауте m_lock берём lock-free состояние
     kouki_voice_state_t v_state = m_last_voice_state;
-    kouki_voice_get_snapshot(&v_state, &m_ctx.voice_result);
+    if (!kouki_voice_get_snapshot(&v_state, &m_ctx.voice_result)) {
+        v_state = kouki_voice_get_state();
+    }
     kouki_voice_get_metrics(&m_ctx.voice_metrics);
     m_ctx.voice_state = v_state;
 

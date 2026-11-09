@@ -1,9 +1,11 @@
 #include "done_state.hpp"
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include "app_history.h"
 
 #ifdef ESP_PLATFORM
+#include "sdkconfig.h"
 #include "app_speech.h"
 #include "app_wifi.h"
 #include "app_config.h"
@@ -16,13 +18,48 @@
 
 namespace kouki::voice {
 
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && defined(CONFIG_KOUKI_SPEECH_ENABLED)
 struct SpeechWorkerArgs {
     DoneState *self;
     uint32_t gen;
     uint32_t speech_gen;
-    char text[512];
+    char text[sizeof(kouki_voice_result_t::answer)];
 };
+
+static void trim_utf8_tail_speech(char *s) noexcept {
+    if (!s || s[0] == '\0') return;
+    const size_t len = std::strlen(s);
+    const auto *u = reinterpret_cast<const unsigned char *>(s);
+    size_t i = len;
+    while (i > 0 && (u[i - 1] & 0xC0u) == 0x80u) {
+        i--;
+    }
+    if (i == len) {
+        if ((u[len - 1] & 0x80u) != 0u) {
+            s[len - 1] = '\0';
+        }
+        return;
+    }
+    if (i == 0) {
+        s[0] = '\0';
+        return;
+    }
+    const unsigned char lead = u[i - 1];
+    size_t expected = 0;
+    if ((lead & 0xE0u) == 0xC0u) {
+        expected = 2;
+    } else if ((lead & 0xF0u) == 0xE0u) {
+        expected = 3;
+    } else if ((lead & 0xF8u) == 0xF0u) {
+        expected = 4;
+    } else {
+        s[lead < 0x80u ? i : (i - 1)] = '\0';
+        return;
+    }
+    if ((len - (i - 1)) < expected) {
+        s[i - 1] = '\0';
+    }
+}
 
 void DoneState::speech_worker_task(void *arg) {
     auto *args = static_cast<SpeechWorkerArgs *>(arg);
@@ -69,8 +106,8 @@ void DoneState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
             args->self = this;
             args->gen = m_speech_gen.load();
             args->speech_gen = speech_gen;
-            std::strncpy(args->text, ctx.result.answer, sizeof(args->text) - 1);
-            args->text[sizeof(args->text) - 1] = '\0';
+            std::snprintf(args->text, sizeof(args->text), "%s", ctx.result.answer);
+            trim_utf8_tail_speech(args->text);
 
             m_speech_started = true;
             m_speech_finished = false;

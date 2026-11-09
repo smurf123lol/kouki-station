@@ -220,6 +220,9 @@ bool VoiceStateManager::start_recording_from_button() noexcept {
         ok = true;
     } else if (cur == StateId::Idle) {
         transition_to_unlocked(StateId::Recording, "button_start");
+    } else if (cur == StateId::Error) {
+        transition_to_unlocked(StateId::Idle, "error_dismiss");
+        transition_to_unlocked(StateId::Recording, "button_start");
     } else {
         ESP_LOGW(TAG, "[FSM: ПРЕРЫВАНИЕ в %s] причина: 'button_start'", current_name());
         m_interrupt_count++;
@@ -257,6 +260,21 @@ bool VoiceStateManager::stop_and_send_from_button() noexcept {
     if (m_lock) xSemaphoreGiveRecursive(m_lock);
 #endif
     return stopped;
+}
+
+bool VoiceStateManager::dismiss_error() noexcept {
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreTakeRecursive(m_lock, portMAX_DELAY);
+#endif
+    bool dismissed = false;
+    if (m_current_id.load(std::memory_order_acquire) == StateId::Error) {
+        transition_to_unlocked(StateId::Idle, "error_dismiss");
+        dismissed = true;
+    }
+#ifdef ESP_PLATFORM
+    if (m_lock) xSemaphoreGiveRecursive(m_lock);
+#endif
+    return dismissed;
 }
 
 void VoiceStateManager::step(const int16_t *pcm, size_t samples) {
@@ -298,10 +316,10 @@ FsmDiagnostics VoiceStateManager::get_diagnostics() const noexcept {
     return d;
 }
 
-void VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept {
+bool VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept {
 #ifdef ESP_PLATFORM
     if (!m_lock || xSemaphoreTakeRecursive(m_lock, pdMS_TO_TICKS(50)) != pdTRUE) {
-        return;
+        return false;
     }
 #endif
     if (state) {
@@ -313,6 +331,7 @@ void VoiceStateManager::get_snapshot(kouki_voice_state_t *state, kouki_voice_res
 #ifdef ESP_PLATFORM
     xSemaphoreGiveRecursive(m_lock);
 #endif
+    return true;
 }
 
 void VoiceStateManager::get_metrics(kouki_voice_metrics_t *metrics) const noexcept {

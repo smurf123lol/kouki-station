@@ -63,7 +63,8 @@ public:
     const VoiceContext& context() const noexcept { return m_context; }
 
     FsmDiagnostics get_diagnostics() const noexcept;
-    void get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept;
+    bool dismiss_error() noexcept;
+    bool get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept;
     void get_metrics(kouki_voice_metrics_t *metrics) const noexcept;
 
     void publish_state(StateId st, const kouki_voice_result_t *res = nullptr) noexcept;

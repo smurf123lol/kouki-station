@@ -61,11 +61,23 @@ static void on_wake_sens_changed(lv_event_t* e)
     lv_obj_t* slider = lv_event_get_target(e);
     int32_t val = lv_slider_get_value(slider);
     kouki_config_set_wake_threshold(static_cast<uint8_t>(val));
-    kouki_config_save();
     if (tile != nullptr) {
         tile->update_wake_sens_label(val);
     }
-    ESP_LOGI(TAG, "чувствительность wake-word изменена: %ld%%", (long)val);
+    ESP_LOGD(TAG, "чувствительность wake-word обновлена в RAM: %ld%%", (long)val);
+}
+
+static void on_wake_sens_released(lv_event_t* e)
+{
+    auto* tile = static_cast<SettingsTile*>(lv_event_get_user_data(e));
+    if (tile != nullptr) {
+        tile->reset_inactivity();
+    }
+    lv_obj_t* slider = lv_event_get_target(e);
+    int32_t val = lv_slider_get_value(slider);
+    kouki_config_set_wake_threshold(static_cast<uint8_t>(val));
+    kouki_config_save();
+    ESP_LOGI(TAG, "чувствительность wake-word сохранена: %ld%%", (long)val);
 }
 
 static void on_silent_toggle(lv_event_t* e)
@@ -184,6 +196,7 @@ SettingsTile::SettingsTile(lv_obj_t* parent, UiStateManager* manager)
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_KNOB);
     lv_obj_add_event_cb(m_wake_slider, on_wake_sens_changed, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(m_wake_slider, on_wake_sens_released, LV_EVENT_RELEASED, this);
 
     // 3. Секция: Режим тишины
     lv_obj_t* silent_row = lv_obj_create(m_scroll_container);

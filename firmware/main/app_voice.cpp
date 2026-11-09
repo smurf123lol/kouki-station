@@ -201,14 +201,24 @@ void kouki_voice_debug_levels(void)
 #endif
 }
 
+kouki_voice_state_t kouki_voice_get_state(void)
+{
+    return to_c_state(s_manager.current_id());
+}
+
+esp_err_t kouki_voice_dismiss_error(void)
+{
+    return s_manager.dismiss_error() ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 bool kouki_voice_is_recording(void)
 {
     return s_manager.current_id() == StateId::Recording;
 }
 
-void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result)
+bool kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result)
 {
-    s_manager.get_snapshot(state, result);
+    return s_manager.get_snapshot(state, result);
 }
 
 void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics)

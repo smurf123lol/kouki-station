@@ -48,6 +48,11 @@ bool kouki_speech_busy(void)
     return false;
 }
 
+bool kouki_speech_worker_active(void)
+{
+    return false;
+}
+
 bool kouki_speech_is_playing(void)
 {
     return false;
@@ -93,6 +98,12 @@ static atomic_uint_fast32_t s_latest_gen;
 static atomic_uint_fast32_t s_aborted_up_to_gen;
 static atomic_uint_fast32_t s_active_gen;
 static atomic_uint_fast32_t s_speaking_gen;
+static atomic_int s_active_workers;
+
+bool kouki_speech_worker_active(void)
+{
+    return atomic_load_explicit(&s_active_workers, memory_order_acquire) > 0;
+}
 
 static bool speech_is_gen_aborted(uint32_t gen)
 {
@@ -566,8 +577,7 @@ static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len, uint3
         return ESP_ERR_INVALID_STATE;
     }
 
-    kouki_voice_state_t voice_state = KOUKI_VOICE_IDLE;
-    kouki_voice_get_snapshot(&voice_state, NULL);
+    const kouki_voice_state_t voice_state = kouki_voice_get_state();
     if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
         ESP_LOGI(TAG, "во время воспроизведения началась запись/отправка — прерываю");
         return ESP_ERR_INVALID_STATE;
@@ -601,8 +611,7 @@ static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len, uint3
         return ESP_ERR_INVALID_STATE;
     }
 
-    kouki_voice_get_snapshot(&voice_state, NULL);
-    if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
+    if (kouki_voice_get_state() == KOUKI_VOICE_RECORDING || kouki_voice_get_state() == KOUKI_VOICE_SENDING) {
         ESP_LOGI(TAG, "после загрузки речи началась запись — прерываю");
         free(wav);
         return ESP_ERR_INVALID_STATE;
@@ -631,8 +640,7 @@ static esp_err_t play_single_phrase(const char *phrase, size_t phrase_len, uint3
                 err = ESP_ERR_INVALID_STATE;
                 break;
             }
-            kouki_voice_get_snapshot(&voice_state, NULL);
-            if (voice_state == KOUKI_VOICE_RECORDING || voice_state == KOUKI_VOICE_SENDING) {
+            if (kouki_voice_get_state() == KOUKI_VOICE_RECORDING || kouki_voice_get_state() == KOUKI_VOICE_SENDING) {
                 ESP_LOGI(TAG, "во время воспроизведения началась запись — прерываю");
                 err = ESP_ERR_INVALID_STATE;
                 break;
@@ -680,13 +688,17 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
         return ESP_OK;
     }
 
+    atomic_fetch_add_explicit(&s_active_workers, 1, memory_order_acq_rel);
+    esp_err_t err = ESP_OK;
+
     if (gen == 0) {
         gen = kouki_speech_reserve();
     }
     uint_fast32_t expected = 0;
     while (true) {
         if (speech_is_gen_aborted(gen)) {
-            return ESP_ERR_INVALID_STATE;
+            err = ESP_ERR_INVALID_STATE;
+            goto worker_cleanup;
         }
         if (expected == 0 || speech_is_gen_aborted((uint32_t)expected)) {
             if (atomic_compare_exchange_weak_explicit(&s_active_gen, &expected,
@@ -698,13 +710,13 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
             continue;
         }
         ESP_LOGW(TAG, "предыдущее озвучивание ещё идёт — пропускаю");
-        return ESP_ERR_INVALID_STATE;
+        err = ESP_ERR_INVALID_STATE;
+        goto worker_cleanup;
     }
 
     ESP_LOGI(TAG, "озвучиваю ответ: %.50s%s", text, strlen(text) > 50 ? "…" : "");
 
     const char *p = text;
-    esp_err_t err = ESP_OK;
     bool played_any = false;
 
     while (*p != '\0') {
@@ -743,6 +755,9 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
     if (played_any && err == ESP_OK && !speech_is_gen_aborted(gen)) {
         kouki_wake_mute(350);
     }
+
+worker_cleanup:
+    atomic_fetch_sub_explicit(&s_active_workers, 1, memory_order_acq_rel);
     return err;
 }
 
