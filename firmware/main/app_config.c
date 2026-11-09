@@ -112,6 +112,22 @@ esp_err_t kouki_config_init(void)
         s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
     }
 
+    /* Миграция 10.11.2026: слайдер раньше назывался «Чувствительность» и писал
+       свой процент прямо в порог, поэтому «максимум чувствительности» превращался
+       в порог 95% и кодовое слово почти не срабатывало. Один раз переводим
+       сохранённые значения >= 90 в осмысленный порог. */
+    uint8_t wake_mig = 0;
+    if (nvs_get_u8(handle, "wake_mig", &wake_mig) != ESP_OK || wake_mig != 1) {
+        if (s_cfg.wake_th >= 90) {
+            ESP_LOGW(TAG, "миграция порога wake: %u%% -> %u%%",
+                     (unsigned)s_cfg.wake_th, (unsigned)KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD);
+            s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
+            nvs_set_u8(handle, "wake_th", s_cfg.wake_th);
+        }
+        nvs_set_u8(handle, "wake_mig", 1);
+        nvs_commit(handle);
+    }
+
     atomic_store_explicit(&s_atomic_silent, s_cfg.silent, memory_order_release);
     atomic_store_explicit(&s_atomic_wake_en, s_cfg.wake_en, memory_order_release);
     atomic_store_explicit(&s_atomic_wake_th, s_cfg.wake_th, memory_order_release);

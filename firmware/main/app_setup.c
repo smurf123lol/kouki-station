@@ -110,7 +110,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<div class=\"field\"><label>Метка источника</label><input type=\"text\" name=\"dev_source\" maxlength=\"32\" value=\"station\"></div>"
         "<div class=\"field\"><label>Сертификат CA (PEM, необязательно)</label><textarea name=\"ca_pem\" rows=\"4\" placeholder=\"-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE----- (пусто — вшитый CA)\"></textarea><div class=\"hint\">Оставьте пустым для вшитого kouki.local CA</div></div>"
         "<div class=\"field\"><label><input type=\"checkbox\" name=\"wake_en\" value=\"1\" style=\"width:auto;display:inline-block;vertical-align:middle;margin-right:8px;\" checked>Wake-word «эй гин»</label></div>"
-        "<div class=\"field\"><label>Порог wake-word (10–95)</label><input type=\"number\" name=\"wake_th\" min=\"10\" max=\"95\" value=\"60\"><div class=\"hint\">По умолчанию 60</div></div>"
+        "<div class=\"field\"><label>Порог уверенности wake-word (35–90)</label><input type=\"number\" name=\"wake_th\" min=\"35\" max=\"90\" value=\"65\"><div class=\"hint\">Меньше — чувствительнее; по умолчанию 65</div></div>"
         "<button type=\"submit\">Сохранить</button>"
         "</form></div></body></html>";
 

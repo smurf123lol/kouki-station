@@ -38,6 +38,10 @@ struct VoiceContext {
     bool cancel_requested = false;
     bool dialogue_continue = false;
 
+    /* Предзапись, которую предыдущее состояние (follow-up) отдаёт записи. */
+    const int16_t *pending_preroll = nullptr;
+    size_t pending_preroll_samples = 0;
+
     uint32_t followup_silence_chunks = 0;
     uint32_t last_vad_silence_ms = 0;
     uint32_t followup_streak = 0;
