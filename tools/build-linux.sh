@@ -35,6 +35,19 @@ IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$WORKSPACE/_scratch/esp-tools}"
 BUILD_DIR="${BUILD_DIR:-}"
 USE_SECRET=0
 CLEAN=0
+# Дополнительные defaults копим списком: --sim и --extra-defaults (и любой
+# --sim-mic в будущем) не должны затирать друг друга. Раньше оба писали в одну
+# переменную, и второй флаг молча выбрасывал первый — образ получался либо без
+# тестовых команд консоли, либо без sim-микрофона, без единой ошибки в выводе.
+EXTRA_DEFAULTS=()
+add_defaults() {
+    # Одинаковый файл дважды не добавляем: idf.py такого не любит, а пользы нет.
+    local f
+    for f in "${EXTRA_DEFAULTS[@]+"${EXTRA_DEFAULTS[@]}"}"; do
+        [ "$f" = "$1" ] && return 0
+    done
+    EXTRA_DEFAULTS+=("$1")
+}
 
 die() { echo "Ошибка: $*" >&2; exit 1; }
 
@@ -47,6 +60,14 @@ usage() {
                   (Wi-Fi, адрес сервера, токен; файл в git не входит)
   --clean         удалить каталог сборки перед сборкой
   --build-dir DIR собрать в DIR (по умолчанию _scratch/build-<target>)
+  --sim           добавить sim/sdkconfig.sim.defaults (тестовые команды консоли;
+                  образ для стенда esp32sim, см. docs/sim.md)
+  --sim-mic       добавить sim/sdkconfig.sim-mic.defaults (подмена микрофона из
+                  I2S-WAV; нужен сценариям с голосом, см. docs/sim.md).
+                  Флаги --sim, --sim-mic и --extra-defaults складываются: все
+                  файлы попадают в SDKCONFIG_DEFAULTS в порядке указания,
+                  побеждает более поздний.
+  --extra-defaults FILE  добавить произвольный файл к sdkconfig.defaults
   -h, --help      эта справка
 
 Окружение: IDF_PATH, IDF_TOOLS_PATH, BUILD_DIR.
@@ -59,6 +80,11 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --secret) USE_SECRET=1; shift ;;
         --clean) CLEAN=1; shift ;;
+        --sim) add_defaults "$REPO_ROOT/sim/sdkconfig.sim.defaults"; shift ;;
+        --sim-mic) add_defaults "$REPO_ROOT/sim/sdkconfig.sim-mic.defaults"; shift ;;
+        --extra-defaults)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            add_defaults "$2"; shift 2 ;;
         --build-dir)
             [ $# -ge 2 ] || { usage >&2; exit 2; }
             BUILD_DIR="$2"; shift 2 ;;
@@ -104,6 +130,16 @@ if [ "$USE_SECRET" -eq 1 ]; then
     [ -f "$FIRMWARE/sdkconfig.secret" ] || die "нет firmware/sdkconfig.secret (--secret без него бессмыслен)"
     DEFAULTS="sdkconfig.defaults;sdkconfig.secret"
 fi
+# Дополнительные файлы defaults (--sim / --sim-mic / --extra-defaults) идут
+# последними, в порядке указания флагов: в SDKCONFIG_DEFAULTS побеждает более
+# позднее значение, поэтому sim-настройки (CONFIG_KOUKI_TEST_CONSOLE_CMDS,
+# CONFIG_KOUKI_SIM_MIC) перекрывают базовые, если разойдутся.
+for f in "${EXTRA_DEFAULTS[@]+"${EXTRA_DEFAULTS[@]}"}"; do
+    # Пути к sim/sdkconfig.*.defaults абсолютные (вне firmware/), idf.py
+    # принимает такие пути в списке defaults как есть.
+    [ -f "$f" ] || die "нет файла defaults: $f"
+    DEFAULTS="$DEFAULTS;$f"
+done
 
 # SDKCONFIG_DEFAULTS читается только при создании sdkconfig: если файл уже есть
 # в каталоге сборки, смена defaults (первый запуск с --secret) молча игнорируется,
@@ -123,6 +159,25 @@ if [ -f "$SDKCONFIG" ]; then
     if [ -n "$expected_url" ] && ! grep -qF "CONFIG_KOUKI_SERVER_URL=\"$expected_url\"" "$SDKCONFIG"; then
         stale=1
     fi
+    # Флаги стенда тоже сверяем (T120): каталог, собранный с --sim, нельзя
+    # молча переиспользовать для боевого образа (в нём останутся
+    # test_seed_history/test_mock_done), и наоборот — сценарии стенда сломаются
+    # без этого флага. То же с --sim-mic: образ без sim-микрофона должен
+    # пересобраться, когда флаг добавили (и наоборот), иначе кривой sdkconfig
+    # молча переживает смену флагов — ровно тот дефект, из-за которого флаги
+    # defaults раньше терялись. Значение берём из defaults: есть строка —
+    # ожидаем y, нет — ожидаем, что в sdkconfig не y.
+    for flag in CONFIG_KOUKI_TEST_CONSOLE_CMDS CONFIG_KOUKI_SIM_MIC; do
+        expected_flag=""
+        for f in "${DEFAULTS_ARRAY[@]}"; do
+            v="$(sed -n "s/^$flag=\(.*\)/\1/p" "$f" 2>/dev/null | tail -1)"
+            [ -n "$v" ] && expected_flag="$v"
+        done
+        actual_flag="$(sed -n "s/^$flag=\(.*\)/\1/p" "$SDKCONFIG" 2>/dev/null | tail -1)"
+        if [ "${expected_flag:-n}" != "${actual_flag:-n}" ]; then
+            stale=1
+        fi
+    done
     if [ "$stale" -eq 1 ]; then
         echo "sdkconfig в $BUILD_DIR не совпадает с defaults: пересоздаю"
         rm -f "$SDKCONFIG"

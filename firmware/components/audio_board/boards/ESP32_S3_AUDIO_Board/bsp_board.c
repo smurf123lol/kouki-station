@@ -275,7 +275,17 @@ static esp_err_t bsp_i2s_init(i2s_port_t i2s_num, uint32_t sample_rate, int chan
     }
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(i2s_num, I2S_ROLE_MASTER);
+#if defined(CONFIG_KOUKI_SIM_MIC)
+    // kouki: esp32sim не двигает слейв-приём. В full-duplex IDF принудительно делает
+    // RX слейвом (i2s_std.c:125-133: «Force to set rx as slave»), и RX_CONF получает
+    // RX_SLAVE_MOD=1 — эмулятор отдаёт пустой поток, read_mic не читает микрофон.
+    // Поэтому в sim-сборке RX открываем отдельным мастер-каналом, не full-duplex.
+    // На плате должно быть n: реальному ES7210 нужны общие BCK/WS с ES8311.
+    ret_val |= i2s_new_channel(&chan_cfg, &tx_handle, NULL);
+    ret_val |= i2s_new_channel(&chan_cfg, NULL, &rx_handle);
+#else
     ret_val |= i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle);
+#endif
     i2s_std_config_t std_cfg = I2S_CONFIG_DEFAULT(sample_rate, channel_fmt, bits_per_chan);
     ret_val |= i2s_channel_init_std_mode(tx_handle, &std_cfg);
     ret_val |= i2s_channel_init_std_mode(rx_handle, &std_cfg);
@@ -429,6 +439,32 @@ esp_err_t bsp_get_feed_data(bool is_get_raw_channel, int16_t *buffer, int buffer
     size_t bytes_read;
     int audio_chunksize = buffer_len / (sizeof(int16_t) * ADC_I2S_CHANNEL);
 
+#if defined(CONFIG_KOUKI_SIM_MIC)
+    // kouki: esp32sim отдаёт только два слота, а станция ждёт четыре канала (RMNM).
+    // I2S RX открыт как stereo/32 бита (bsp_codec_adc_init), поэтому кадр — это
+    // 8 байт: два 32-битных сэмпла, значение лежит в старших 16 битах. Разворачиваем
+    // кадр в 4 канала int16, чтобы read_mic (app_voice.cpp) получил осмысленные
+    // сэмплы: там channels=4, а байт на кадр столько же (frames*4*2 == frames*2*4).
+    // На плате должно быть n: ES7210 отдаёт настоящие четыре канала.
+    (void)is_get_raw_channel;
+    ret = esp_codec_dev_read(record_dev, (void *)buffer, buffer_len);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    int32_t *stereo = (int32_t *)buffer;
+    // С конца, чтобы не затереть ещё не прочитанные сэмплы при разжатии на месте.
+    for (int i = audio_chunksize - 1; i >= 0; i--) {
+        int16_t left = (int16_t)(stereo[2 * i] >> 16);
+        int16_t right = (int16_t)(stereo[2 * i + 1] >> 16);
+        int16_t mono = (left == right) ? left : (int16_t)(((int32_t)left + right) / 2);
+        buffer[4 * i + 0] = mono;
+        buffer[4 * i + 1] = mono;
+        buffer[4 * i + 2] = mono;
+        buffer[4 * i + 3] = mono;
+    }
+
+    return ret;
+#else
     ret = esp_codec_dev_read(record_dev, (void *)buffer, buffer_len);
     if (!is_get_raw_channel) {
         for (int i = 0; i < audio_chunksize; i++) {
@@ -440,6 +476,7 @@ esp_err_t bsp_get_feed_data(bool is_get_raw_channel, int16_t *buffer, int buffer
     }
 
     return ret;
+#endif
 }
 
 int bsp_get_feed_channel(void)

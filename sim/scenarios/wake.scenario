@@ -1,0 +1,27 @@
+# wake — кодовое слово «эй гин» с микрофона: sim-микрофон KOUKI_SIM_MIC.
+#
+# Голос подаётся в I2S RX станции: порт 1 (I2S_NUM_1, см. bsp_board.c). Детектор
+# глушится на 2500 мс после инициализации (app_wake.c: kouki_wake_mute(2500)),
+# поэтому запись стартует после 3 с эмуляционного времени.
+# NVS-образ с wake_en=1 берётся из sim/nvs/wake.csv (строкой `nvs: wake`).
+max-seconds: 12
+nvs: wake
+
+# Фикстура «эй гин» — 16 кГц моно PCM16, 1.39 с. Повторяем трижды: детектор
+# требует двух подряд уверенных хитов, а окно модели — 1 с.
+3.50 i2s_wav 1 sim/fixtures/mic/ey_gin.wav
+5.50 i2s_wav 1 sim/fixtures/mic/ey_gin.wav
+7.50 i2s_wav 1 sim/fixtures/mic/ey_gin.wav
+8.50 serial state
+9.50 stop
+
+expect:
+# firmware/main/app_wake.c — детектор сработал.
++ распознано «эй гин»
+# FSM: переход IDLE -> RECORDING по кодовому слову (idle_state.cpp).
++ [FSM: IDLE -> RECORDING]
+# Микрофон читается: этот лог означает, что esp_codec_dev_read отдаёт данные.
+- read_mic(56): чтение микрофона не удалось
+- Guru Meditation
+- abort()
+- assert failed

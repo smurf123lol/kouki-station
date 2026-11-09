@@ -1,0 +1,23 @@
+# boot — базовая загрузка станции: консоль, Wi-Fi, сервер, стартовое состояние FSM.
+#
+# Тайминги — эмуляционные секунды (эмулятор идёт быстрее реального времени).
+# Тело — формат action-скрипта esp32sim (_scratch/esp32sim/docs/cli.md).
+max-seconds: 8
+
+4.00 serial state
+4.50 stop
+
+expect:
+# Литерал из firmware/main/app_setup.c:563 — консоль поднялась.
++ === Kouki Station Console ===
+# firmware/main/app_wifi.c:40 — DHCP прошёл.
++ адрес получен:
+# firmware/main/app_setup.c — сеть и сервер сконфигурированы.
++ сеть готова
+# FSM стартует в IDLE без перехода, поэтому состояние читаем командой state
+# (firmware/main/app_voice.cpp:239): строки «FSM: … -> IDLE» в логе не будет.
++ Текущее:       IDLE
+# Любое из этого — падение прошивки, а не рабочий прогон.
+- Guru Meditation
+- abort()
+- assert failed

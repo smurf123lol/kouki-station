@@ -1,0 +1,37 @@
+# network-roundtrip — полный путь «команда → состояние DONE → озвучка» без микрофона.
+#
+# Зачем: проверить голосовое ядро и звуковой тракт станции без записи с
+# микрофона (её даёт только П3/KOUKI_SIM_MIC). История наполняется тестовой
+# командой, DONE — тоже, поэтому сценарий не зависит от сервера и не тратит
+# время на реальный /api/voice: сеть проверяется отдельно строкой «сеть готова».
+#
+# audio: nonsilent — в DONE станция озвучивает ответ (main/app_speech), значит
+# out.wav обязан быть не тишиной. Где TTS нет (например, silent=1), проверка
+# выключается строкой в заголовке сценария.
+max-seconds: 10
+audio: nonsilent
+
+4.00 serial test_seed_history
+4.80 serial test_mock_done
+5.60 serial state
+7.50 serial state
+8.60 serial diag
+9.20 stop
+
+expect:
+# main/app_setup.c — консольные test-команды доступны (CONFIG_KOUKI_TEST_CONSOLE_CMDS
+# из sim/sdkconfig.sim.defaults), история наполнилась.
++ OK (добавлено 10 записей в историю)
+# main/app_setup.c — FSM ушёл в DONE тестовой командой.
++ OK (mock DONE)
+# main/app_speech.c — ответ озвучен, то есть аудиовыход работает.
++ озвучиваю ответ:
+# main/app_voice.cpp — состояние действительно DONE, а не только лог.
++ Текущее:       DONE
+# Сеть до локального сервера жива (OTA-проверка на старте).
++ сеть готова
+# main/app_setup.c — diag отвечает (консоль жива до конца прогона).
++ Свободная память кучи:
+- Guru Meditation
+- abort()
+- assert failed

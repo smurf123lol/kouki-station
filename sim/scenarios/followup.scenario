@@ -1,0 +1,36 @@
+# followup — окно продолжения диалога: DONE -> FOLLOWUP -> RECORDING.
+#
+# После ответа (mock DONE, сессия ask) станция держит окно 6 с
+# (CONFIG_KOUKI_FOLLOWUP_WINDOW_MS) и ждёт продолжения без кодового слова.
+# Речь в окне подтверждается спектральной VAD (13 кадров по 30 мс подряд =
+# 390 мс, firmware/main/fsm/states/followup_state.hpp), а не детектором
+# wake-word, поэтому NVS берём без wake-word (net.csv, wake_en=0).
+#
+# `serial set_silent 1` выключает TTS: иначе озвучка ответа занимает динамик,
+# FOLLOWUP не слушает микрофон, пока играет речь, и подача в окно попадает
+# в мёртвое время. Тишина здесь не ослабляет проверку — переходы FSM от неё
+# не зависят, а прогон становится короче и стабильнее.
+max-seconds: 14
+nvs: net
+
+2.50 serial set_silent 1
+3.50 serial test_mock_done
+6.00 serial state
+7.50 i2s_wav 1 sim/fixtures/mic/followup_speech.wav
+9.00 serial state
+12.50 serial state
+13.50 stop
+
+expect:
+# Ответ доведён до DONE — с этого места начинается окно продолжения.
++ OK (mock DONE)
++ Текущее:       DONE
+# Оба перехода окна: сначала из DONE в FOLLOWUP, затем речь в окне.
++ [FSM: DONE -> FOLLOWUP]
++ [FSM: FOLLOWUP -> RECORDING]
+# Продолжение — обычная запись без кодового слова, а не повторный wake.
+- FSM: IDLE -> RECORDING
+- read_mic(56): чтение микрофона не удалось
+- Guru Meditation
+- abort()
+- assert failed
