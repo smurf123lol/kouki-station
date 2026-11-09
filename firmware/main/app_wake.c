@@ -2,6 +2,7 @@
 #include "app_wake.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,9 @@
 #include "dl_rfft.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "wake_model_ey_gin.h"
 
 static const char *TAG = "kouki.wake";
@@ -26,6 +30,16 @@ static const int16_t g_mel_bins[MEL_BINS_COUNT + 2] = {
     145, 155, 165, 177, 188, 201, 214, 228, 243
 };
 
+/*
+ * Leaf-мьютекс состояния детектора (Level 2b): никогда не берет m_lock и audio_out.
+ * Защищает буферы инференса/счетчики от гонок между record_task (Core 1)
+ * и reset()/mute()/deinit() из других задач (Core 0).
+ */
+static SemaphoreHandle_t s_wake_mutex = NULL;
+static portMUX_TYPE s_wake_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static atomic_bool s_wake_ready;
+static atomic_int_least64_t s_mute_until_us;
+
 static bool s_initialized = false;
 static dl_fft_f32_t *s_fft = NULL;
 static float s_hann_window[FRAME_LEN];
@@ -39,20 +53,67 @@ static int s_step_counter = 0;
 static int s_frames_collected = 0;
 static int16_t s_frame_peak[WAKE_MODEL_FRAMES];
 static int16_t s_step_peak = 0;
+static int s_consecutive_hits = 0;
+
+static SemaphoreHandle_t wake_lock_get(void)
+{
+    if (s_wake_mutex != NULL) {
+        return s_wake_mutex;
+    }
+    SemaphoreHandle_t created = xSemaphoreCreateMutex();
+    if (created == NULL) {
+        return NULL;
+    }
+    taskENTER_CRITICAL(&s_wake_spinlock);
+    if (s_wake_mutex == NULL) {
+        s_wake_mutex = created;
+        created = NULL;
+    }
+    taskEXIT_CRITICAL(&s_wake_spinlock);
+    if (created != NULL) {
+        vSemaphoreDelete(created);
+    }
+    return s_wake_mutex;
+}
+
+static void wake_reset_locked(void)
+{
+    s_step_buf_len = 0;
+    s_step_counter = 0;
+    s_consecutive_hits = 0;
+    s_step_peak = 0;
+    s_frames_collected = 0;
+    if (s_spectrogram) {
+        for (int c = 0; c < TOTAL_CELLS; c++) {
+            s_spectrogram[c] = -13.81551f;
+        }
+    }
+    memset(s_pcm_window, 0, sizeof(s_pcm_window));
+    memset(s_frame_peak, 0, sizeof(s_frame_peak));
+}
 
 esp_err_t kouki_wake_init(void)
 {
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(mtx, portMAX_DELAY);
+
     if (s_initialized) {
+        xSemaphoreGive(mtx);
         return ESP_OK;
     }
 
     if (!kouki_config_get_wake_enabled()) {
+        xSemaphoreGive(mtx);
         ESP_LOGI(TAG, "детектор wake-word выключен в конфигурации NVS (wake_en=0)");
         return ESP_ERR_NOT_SUPPORTED;
     }
 
     s_fft = dl_rfft_f32_init(FFT_POINTS, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!s_fft) {
+        xSemaphoreGive(mtx);
         ESP_LOGE(TAG, "не удалось инициализировать FFT-инстанс %d точек", FFT_POINTS);
         return ESP_ERR_NO_MEM;
     }
@@ -72,6 +133,7 @@ esp_err_t kouki_wake_init(void)
         ESP_LOGE(TAG, "не удалось выделить память под буфер спектрограммы (%u байт)", (unsigned)(TOTAL_CELLS * sizeof(float)));
         dl_rfft_f32_deinit(s_fft);
         s_fft = NULL;
+        xSemaphoreGive(mtx);
         return ESP_ERR_NO_MEM;
     }
     for (int c = 0; c < TOTAL_CELLS; c++) {
@@ -90,6 +152,7 @@ esp_err_t kouki_wake_init(void)
         s_spectrogram = NULL;
         dl_rfft_f32_deinit(s_fft);
         s_fft = NULL;
+        xSemaphoreGive(mtx);
         return ESP_ERR_NO_MEM;
     }
     memset(s_norm_spec, 0, TOTAL_CELLS * sizeof(float));
@@ -107,15 +170,19 @@ esp_err_t kouki_wake_init(void)
         s_spectrogram = NULL;
         dl_rfft_f32_deinit(s_fft);
         s_fft = NULL;
+        xSemaphoreGive(mtx);
         return ESP_ERR_NO_MEM;
     }
     memset(s_infer_arena, 0, WAKE_MODEL_ARENA_FLOATS * sizeof(float));
 
     s_step_counter = 0;
     s_frames_collected = 0;
+    s_consecutive_hits = 0;
     s_initialized = true;
+    atomic_store_explicit(&s_wake_ready, true, memory_order_release);
 
     uint8_t th = kouki_config_get_wake_threshold();
+    xSemaphoreGive(mtx);
     (void)th;
     (void)TAG;
     ESP_LOGI(TAG, "детектор «эй гин» готов: microWakeWord INT8 (%u байт), порог %u%% (%.2f), окно %d с",
@@ -124,33 +191,41 @@ esp_err_t kouki_wake_init(void)
     return ESP_OK;
 }
 
-static int64_t s_mute_until_us = 0;
-static int s_consecutive_hits = 0;
-
 void kouki_wake_reset(void)
 {
-    s_step_buf_len = 0;
-    s_step_counter = 0;
-    s_consecutive_hits = 0;
-    s_step_peak = 0;
-    s_frames_collected = 0;
-    if (s_spectrogram) {
-        for (int c = 0; c < TOTAL_CELLS; c++) {
-            s_spectrogram[c] = -13.81551f;
-        }
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx != NULL) {
+        xSemaphoreTake(mtx, portMAX_DELAY);
     }
-    memset(s_pcm_window, 0, sizeof(s_pcm_window));
-    memset(s_frame_peak, 0, sizeof(s_frame_peak));
+    wake_reset_locked();
+    if (mtx != NULL) {
+        xSemaphoreGive(mtx);
+    }
 }
 
 void kouki_wake_mute(int duration_ms)
 {
-    s_mute_until_us = esp_timer_get_time() + (int64_t)duration_ms * 1000;
+    if (duration_ms > 0) {
+        const int64_t until_us = esp_timer_get_time() + (int64_t)duration_ms * 1000;
+        int_least64_t cur = atomic_load_explicit(&s_mute_until_us, memory_order_relaxed);
+        while (until_us > (int64_t)cur &&
+               !atomic_compare_exchange_weak_explicit(&s_mute_until_us, &cur,
+                                                       (int_least64_t)until_us,
+                                                       memory_order_release,
+                                                       memory_order_relaxed)) {
+        }
+    }
     kouki_wake_reset();
 }
 
 void kouki_wake_deinit(void)
 {
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx != NULL) {
+        xSemaphoreTake(mtx, portMAX_DELAY);
+    }
+    atomic_store_explicit(&s_wake_ready, false, memory_order_release);
+    s_initialized = false;
     if (s_fft) {
         dl_rfft_f32_deinit(s_fft);
         s_fft = NULL;
@@ -167,13 +242,15 @@ void kouki_wake_deinit(void)
         free(s_infer_arena);
         s_infer_arena = NULL;
     }
-    s_initialized = false;
-    kouki_wake_reset();
+    wake_reset_locked();
+    if (mtx != NULL) {
+        xSemaphoreGive(mtx);
+    }
 }
 
 bool kouki_wake_is_ready(void)
 {
-    return s_initialized && kouki_config_get_wake_enabled();
+    return atomic_load_explicit(&s_wake_ready, memory_order_acquire) && kouki_config_get_wake_enabled();
 }
 
 const char *kouki_wake_model(void)
@@ -230,11 +307,24 @@ static void process_frame(void)
 
 bool kouki_wake_feed(const int16_t *pcm, int samples)
 {
-    if (!s_initialized || !kouki_config_get_wake_enabled() || !pcm || samples <= 0) {
+    if (!atomic_load_explicit(&s_wake_ready, memory_order_acquire) ||
+        !kouki_config_get_wake_enabled() || !pcm || samples <= 0) {
         return false;
     }
 
-    if (esp_timer_get_time() < s_mute_until_us) {
+    if (esp_timer_get_time() < (int64_t)atomic_load_explicit(&s_mute_until_us, memory_order_acquire)) {
+        return false;
+    }
+
+    SemaphoreHandle_t mtx = wake_lock_get();
+    if (mtx == NULL) {
+        return false;
+    }
+    xSemaphoreTake(mtx, portMAX_DELAY);
+
+    if (!s_initialized || !s_fft || !s_spectrogram || !s_norm_spec || !s_infer_arena ||
+        esp_timer_get_time() < (int64_t)atomic_load_explicit(&s_mute_until_us, memory_order_acquire)) {
+        xSemaphoreGive(mtx);
         return false;
     }
 
@@ -320,15 +410,18 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                 }
 
                 if (hit) {
-                    ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f (порог NVS=%.2f)",
-                             (double)prob, (double)threshold);
-                    detected = true;
                     s_consecutive_hits = 0;
-                    kouki_wake_reset();
+                    wake_reset_locked();
+                    if (esp_timer_get_time() >= (int64_t)atomic_load_explicit(&s_mute_until_us, memory_order_acquire)) {
+                        ESP_LOGI(TAG, "распознано «эй гин»! prob=%.3f (порог NVS=%.2f)",
+                                 (double)prob, (double)threshold);
+                        detected = true;
+                    }
                 }
             }
         }
     }
 
+    xSemaphoreGive(mtx);
     return detected;
 }

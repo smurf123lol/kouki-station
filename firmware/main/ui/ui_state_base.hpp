@@ -34,7 +34,7 @@ public:
     virtual void on_enter(UiContext& ctx) = 0;
     virtual void on_exit(UiContext& ctx) = 0;
     virtual void step(UiContext& ctx, uint32_t dt_ms) = 0;
-    virtual void on_tap(UiContext& ctx) {}
+    virtual void on_tap(UiContext& ctx) { (void)ctx; }
 };
 
 } // namespace kouki::ui

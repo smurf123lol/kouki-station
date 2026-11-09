@@ -6,16 +6,14 @@
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
-#include "esp_http_client.h"
 #endif
 
 namespace kouki::voice {
 
 class SendingState final : public VoiceStateBase {
 public:
-    SendingState();
-    ~SendingState() override;
+    SendingState() = default;
+    ~SendingState() override = default;
 
     const char* name() const noexcept override { return "SENDING"; }
     StateId id() const noexcept override { return StateId::Sending; }
@@ -25,7 +23,7 @@ public:
     void on_interrupt(VoiceContext& ctx, const char* reason) override;
     void on_exit(VoiceContext& ctx) override;
 
-    // Вызывается из воркера отправки по завершении
+    // Вызывается из воркера отправки или host-теста по завершении
     void notify_complete(StateId result_state) noexcept;
 
 private:
@@ -33,11 +31,12 @@ private:
     std::atomic<bool> m_finished{false};
     std::atomic<bool> m_cancelled{false};
     std::atomic<StateId> m_next_state{StateId::Stay};
+    std::atomic<uint32_t> m_gen{0};
+    std::atomic<bool> m_has_worker_result{false};
+    kouki_voice_result_t m_worker_result{};
 
 #ifdef ESP_PLATFORM
     TaskHandle_t m_task_handle = nullptr;
-    esp_http_client_handle_t m_http_client = nullptr;
-    SemaphoreHandle_t m_client_lock = nullptr;
     static void send_worker_task(void *arg);
 #endif
 };

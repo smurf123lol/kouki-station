@@ -15,13 +15,13 @@ OrbWidget::OrbWidget(lv_obj_t* parent)
     lv_obj_clear_flag(m_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(m_container, LV_OBJ_FLAG_CLICKABLE);
 
-    // Wi-Fi точка вверху
+    // Wi-Fi точка вверху (разнесена с мини-сферой SubDone, чтобы не перекрываться)
     m_wifi_dot = lv_obj_create(m_container);
     lv_obj_set_size(m_wifi_dot, 8, 8);
     lv_obj_set_style_radius(m_wifi_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(m_wifi_dot, lv_color_hex(COLOR_DANGER), 0);
     lv_obj_set_style_border_width(m_wifi_dot, 0, 0);
-    lv_obj_align(m_wifi_dot, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(m_wifi_dot, LV_ALIGN_TOP_MID, 0, 11);
     lv_obj_clear_flag(m_wifi_dot, LV_OBJ_FLAG_CLICKABLE);
 
     // Главное кольцо сферы (диаметр 260px в нормальном состоянии)
@@ -112,6 +112,12 @@ OrbWidget::~OrbWidget()
 void OrbWidget::set_mode(UiVoiceSubStateId mode)
 {
     m_mode = mode;
+    m_last_dt_ms = 0;
+    m_last_metric_silence_ms = 0;
+    m_display_silence_ms = 0;
+    m_last_total_sec = UINT32_MAX;
+    m_last_arc_angle = 0;
+    m_arc_visible = false;
 
     switch (mode) {
     case UiVoiceSubStateId::SUB_IDLE:
@@ -171,9 +177,9 @@ void OrbWidget::set_mode(UiVoiceSubStateId mode)
         break;
 
     case UiVoiceSubStateId::SUB_DONE:
-        // Мини-сфера вверху экрана
+        // Мини-сфера вверху экрана (центр y=42: ниже Wi-Fi точки y=11..19 и выше карточки y=65)
         lv_obj_set_size(m_ring, 32, 32);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
         lv_obj_set_style_border_color(m_ring, lv_color_hex(COLOR_SAND), 0);
         lv_obj_set_style_border_width(m_ring, 3, 0);
         lv_obj_clear_flag(m_ring, LV_OBJ_FLAG_HIDDEN);
@@ -245,21 +251,43 @@ void OrbWidget::update_wifi_status(bool connected)
 
 void OrbWidget::update_recording_metrics(uint32_t duration_ms, bool speech_detected, uint32_t silence_ms, uint32_t silence_limit_ms)
 {
-    char buf[16];
-    uint32_t total_sec = duration_ms / 1000;
-    uint32_t min = total_sec / 60;
-    uint32_t sec = total_sec % 60;
-    snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)min, (unsigned long)sec);
-    lv_label_set_text(m_substatus_label, buf);
+    const uint32_t total_sec = duration_ms / 1000;
+    if (total_sec != m_last_total_sec) {
+        m_last_total_sec = total_sec;
+        char buf[16];
+        const uint32_t min = total_sec / 60;
+        const uint32_t sec = total_sec % 60;
+        snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)min, (unsigned long)sec);
+        lv_label_set_text(m_substatus_label, buf);
+    }
 
-    // Управление внешней дугой тишины (VAD Arc)
-    if (!speech_detected || silence_ms == 0 || silence_limit_ms == 0) {
-        lv_obj_add_flag(m_silence_arc, LV_OBJ_FLAG_HIDDEN);
+    // Плавная интерполяция тишины между 64-мс шагами record_task + геп перед появлением дуги
+    (void)advance_vad_silence_display(speech_detected,
+                                      silence_ms,
+                                      silence_limit_ms,
+                                      m_last_dt_ms,
+                                      &m_last_metric_silence_ms,
+                                      &m_display_silence_ms);
+    m_last_dt_ms = 0;
+
+    bool visible = false;
+    const uint16_t angle = compute_vad_arc_angle(speech_detected, m_display_silence_ms, silence_limit_ms, &visible);
+    if (!visible) {
+        if (m_arc_visible) {
+            m_arc_visible = false;
+            m_last_arc_angle = 0;
+            lv_obj_add_flag(m_silence_arc, LV_OBJ_FLAG_HIDDEN);
+        }
     } else {
-        lv_obj_clear_flag(m_silence_arc, LV_OBJ_FLAG_HIDDEN);
-        uint32_t remaining = (silence_ms >= silence_limit_ms) ? 0 : (silence_limit_ms - silence_ms);
-        uint16_t angle = static_cast<uint16_t>((remaining * 360ULL) / silence_limit_ms);
-        lv_arc_set_angles(m_silence_arc, 0, angle);
+        if (!m_arc_visible) {
+            m_arc_visible = true;
+            m_last_arc_angle = angle;
+            lv_arc_set_angles(m_silence_arc, 0, angle);
+            lv_obj_clear_flag(m_silence_arc, LV_OBJ_FLAG_HIDDEN);
+        } else if (angle != m_last_arc_angle) {
+            m_last_arc_angle = angle;
+            lv_arc_set_angles(m_silence_arc, 0, angle);
+        }
     }
 }
 
@@ -281,16 +309,17 @@ void OrbWidget::update_speech_pulse(bool is_speaking)
         // Мягкая пульсация мини-сферы при воспроизведении ответа
         int sz = 32 + (int)(sin((double)m_anim_time_ms * 0.008) * 4.0);
         lv_obj_set_size(m_ring, sz, sz);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
     } else {
         lv_obj_set_size(m_ring, 32, 32);
-        lv_obj_align(m_ring, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_align(m_ring, LV_ALIGN_CENTER, 0, MINI_ORB_TAP_CENTER_Y_OFFSET);
     }
 }
 
 void OrbWidget::step(uint32_t dt_ms)
 {
     m_anim_time_ms += dt_ms;
+    m_last_dt_ms = dt_ms;
 
     if (m_mode == UiVoiceSubStateId::SUB_IDLE) {
         // Дыхание кольца: легкое покачивание толщины границы (2..4 px)

@@ -7,18 +7,17 @@
 #include "app_voice.h"
 #include "app_speech.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include <cstdio>
 
 static const char *TAG = "kouki.ui.mgr";
 
 namespace kouki::ui {
 
-static void on_tile_voice_clicked(lv_event_t* e)
+static void on_tile_voice_event_cb(lv_event_t* e)
 {
     auto* mgr = static_cast<UiStateManager*>(lv_event_get_user_data(e));
     if (mgr != nullptr) {
-        mgr->on_voice_tile_clicked();
+        mgr->on_tile_voice_event(e);
     }
 }
 
@@ -42,6 +41,87 @@ void UiStateManager::on_voice_tile_clicked()
 {
     if (m_current_substate != nullptr) {
         m_current_substate->on_tap(m_ctx);
+    }
+}
+
+void UiStateManager::on_tile_voice_event(lv_event_t* e)
+{
+    if (e == nullptr || lv_event_get_target(e) != m_tile_voice) {
+        return;
+    }
+
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_PRESSED &&
+        code != LV_EVENT_PRESSING &&
+        code != LV_EVENT_PRESS_LOST &&
+        code != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        m_press_active = false;
+        m_press_in_zone = false;
+        m_press_dragged = false;
+        return;
+    }
+
+    lv_indev_t* indev = lv_event_get_indev(e);
+    if (indev == nullptr) {
+        indev = lv_indev_get_act();
+    }
+    if (indev == nullptr) {
+        if (code == LV_EVENT_PRESSED) {
+            m_press_active = false;
+            m_press_in_zone = false;
+            m_press_dragged = false;
+        }
+        return;
+    }
+
+    lv_point_t pt{};
+    lv_indev_get_point(indev, &pt);
+
+    lv_area_t coords{};
+    lv_obj_get_coords(m_tile_voice, &coords);
+    const int cx = (static_cast<int>(coords.x1) + static_cast<int>(coords.x2)) / 2;
+    const int cy = (static_cast<int>(coords.y1) + static_cast<int>(coords.y2)) / 2;
+    const bool done_mode = (m_current_substate != nullptr && m_current_substate->id() == UiVoiceSubStateId::SUB_DONE);
+
+    if (code == LV_EVENT_PRESSED) {
+        m_press_active = true;
+        m_press_dragged = false;
+        m_press_pt_x = pt.x;
+        m_press_pt_y = pt.y;
+        m_press_in_zone = (get_active_tile() == TileId::TILE_VOICE) &&
+                          is_in_voice_tap_zone(static_cast<int>(pt.x) - cx, static_cast<int>(pt.y) - cy, done_mode);
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if (m_press_active && !m_press_dragged) {
+            if (is_drag_beyond_threshold(static_cast<int>(pt.x) - m_press_pt_x, static_cast<int>(pt.y) - m_press_pt_y) ||
+                lv_indev_get_scroll_obj(indev) != nullptr) {
+                m_press_dragged = true;
+            }
+        }
+        return;
+    }
+
+    // LV_EVENT_CLICKED: пропускаем только чистый тап в зоне без свайпа/скролла
+    const bool should_tap = m_press_active &&
+                            m_press_in_zone &&
+                            !m_press_dragged &&
+                            (get_active_tile() == TileId::TILE_VOICE) &&
+                            (lv_indev_get_scroll_obj(indev) == nullptr) &&
+                            !is_drag_beyond_threshold(static_cast<int>(pt.x) - m_press_pt_x, static_cast<int>(pt.y) - m_press_pt_y) &&
+                            is_in_voice_tap_zone(static_cast<int>(pt.x) - cx, static_cast<int>(pt.y) - cy, done_mode);
+
+    m_press_active = false;
+    m_press_in_zone = false;
+    m_press_dragged = false;
+
+    if (should_tap) {
+        on_voice_tile_clicked();
     }
 }
 
@@ -92,8 +172,8 @@ void UiStateManager::init()
     m_ctx.orb = m_orb;
     m_ctx.response_card = m_response_card;
 
-    // Тап по центральному экрану
-    lv_obj_add_event_cb(m_tile_voice, on_tile_voice_clicked, LV_EVENT_CLICKED, this);
+    // Разделение тапа и свайпа по центральному экрану
+    lv_obj_add_event_cb(m_tile_voice, on_tile_voice_event_cb, LV_EVENT_ALL, this);
 
     // Стартуем в подсостоянии SubIdle
     m_current_substate = &m_sub_idle;
@@ -121,6 +201,10 @@ void UiStateManager::transition_to(UiVoiceSubStateId next_state)
     if (m_current_substate != nullptr && m_current_substate->id() == next_state) {
         return;
     }
+
+    m_press_active = false;
+    m_press_in_zone = false;
+    m_press_dragged = false;
 
     if (m_current_substate != nullptr) {
         m_current_substate->on_exit(m_ctx);
@@ -166,20 +250,32 @@ TileId UiStateManager::get_active_tile() const
 
 void UiStateManager::toggle_recording()
 {
-    if (m_modal_screens != nullptr && m_modal_screens->is_active()) {
+    if (m_ota_requested.load(std::memory_order_acquire) ||
+        (m_modal_screens != nullptr && m_modal_screens->is_setup_active())) {
         return;
     }
 
-    if (kouki_voice_is_recording()) {
+    kouki_voice_state_t v_state = m_last_voice_state;
+    if (!kouki_voice_get_snapshot(&v_state, nullptr)) {
+        v_state = kouki_voice_get_state();
+    }
+
+    if (v_state == KOUKI_VOICE_RECORDING || kouki_voice_is_recording()) {
         ESP_LOGI(TAG, "останавливаю запись");
         kouki_voice_stop_and_send();
         return;
     }
 
-    if (kouki_speech_is_playing()) {
+    if (v_state == KOUKI_VOICE_SENDING) {
+        ESP_LOGW(TAG, "запись не началась: идёт отправка");
+        return;
+    }
+
+    if (kouki_speech_is_playing() || kouki_speech_busy()) {
         ESP_LOGI(TAG, "прерываю озвучивание перед новой записью");
         kouki_speech_abort();
-        vTaskDelay(pdMS_TO_TICKS(50));
+    } else if (v_state == KOUKI_VOICE_DONE) {
+        kouki_speech_abort();
     }
 
     const esp_err_t start_err = kouki_voice_start_recording();
@@ -199,18 +295,45 @@ void UiStateManager::show_setup(const char* ssid, const char* url)
     }
 }
 
-void UiStateManager::show_ota_progress(const char* text)
+void UiStateManager::clear_setup()
 {
     if (m_modal_screens != nullptr) {
-        m_modal_screens->show_ota(text);
+        m_modal_screens->clear_setup();
     }
+}
+
+void UiStateManager::show_ota_progress(const char* text)
+{
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+    m_pending_ota_action = PendingOtaAction::SHOW;
+    if (text != nullptr) {
+        std::snprintf(m_pending_ota_text, sizeof(m_pending_ota_text), "%s", text);
+    } else {
+        m_pending_ota_text[0] = '\0';
+    }
+    m_ota_requested.store(true, std::memory_order_release);
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#endif
 }
 
 void UiStateManager::clear_ota()
 {
-    if (m_modal_screens != nullptr) {
-        m_modal_screens->clear_ota();
-    }
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+    m_pending_ota_action = PendingOtaAction::CLEAR;
+    m_pending_ota_text[0] = '\0';
+    m_ota_requested.store(false, std::memory_order_release);
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#endif
 }
 
 void UiStateManager::step(uint32_t dt_ms)
@@ -219,10 +342,39 @@ void UiStateManager::step(uint32_t dt_ms)
         return;
     }
 
-    // Получаем текущий снимок состояния голоса и метрик VAD
-    kouki_voice_state_t v_state = KOUKI_VOICE_IDLE;
-    memset(&m_ctx.voice_result, 0, sizeof(m_ctx.voice_result));
-    kouki_voice_get_snapshot(&v_state, &m_ctx.voice_result);
+    // Применяем отложенный OTA-экран строго в потоке LVGL (main_task)
+    PendingOtaAction ota_action = PendingOtaAction::NONE;
+    char ota_text[128]{};
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&m_ota_spinlock);
+#else
+    {
+        std::lock_guard<std::mutex> lock(m_ota_mutex);
+#endif
+        ota_action = m_pending_ota_action;
+        if (ota_action == PendingOtaAction::SHOW) {
+            std::snprintf(ota_text, sizeof(ota_text), "%s", m_pending_ota_text);
+        }
+        m_pending_ota_action = PendingOtaAction::NONE;
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&m_ota_spinlock);
+#else
+    }
+#endif
+
+    if (m_modal_screens != nullptr) {
+        if (ota_action == PendingOtaAction::SHOW) {
+            m_modal_screens->show_ota(ota_text[0] != '\0' ? ota_text : nullptr);
+        } else if (ota_action == PendingOtaAction::CLEAR) {
+            m_modal_screens->clear_ota();
+        }
+    }
+
+    // Получаем текущий снимок состояния голоса и метрик VAD; при таймауте m_lock берём lock-free состояние
+    kouki_voice_state_t v_state = m_last_voice_state;
+    if (!kouki_voice_get_snapshot(&v_state, &m_ctx.voice_result)) {
+        v_state = kouki_voice_get_state();
+    }
     kouki_voice_get_metrics(&m_ctx.voice_metrics);
     m_ctx.voice_state = v_state;
 

@@ -14,6 +14,7 @@ public:
 
 private:
     uint32_t m_time_poll_ms{1000};
+    uint32_t m_last_wifi_seq{0};
 };
 
 class SubRecordingState : public UiVoiceSubStateBase {

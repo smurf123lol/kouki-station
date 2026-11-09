@@ -6,6 +6,8 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -17,6 +19,9 @@ extern "C" {
 esp_err_t kouki_wifi_connect(void);
 
 bool kouki_wifi_is_connected(void);
+
+/* Монотонный счётчик изменений состояния подключения/IP (для реактивного обновления UI). */
+uint32_t kouki_wifi_state_seq(void);
 
 /* Возвращает IP-адрес станции и RSSI (уровень сигнала в dBm). */
 esp_err_t kouki_wifi_get_info(char *ip_buf, size_t ip_len, int8_t *rssi);

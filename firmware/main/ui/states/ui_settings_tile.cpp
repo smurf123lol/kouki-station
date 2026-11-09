@@ -1,5 +1,6 @@
 #include "ui_settings_tile.hpp"
 #include "ui_state_manager.hpp"
+#include "app_audio_out.h"
 #include "app_config.h"
 #include "app_wifi.h"
 #include "app_ota.h"
@@ -29,7 +30,9 @@ static void on_volume_changed(lv_event_t* e)
     }
     lv_obj_t* slider = lv_event_get_target(e);
     int32_t val = lv_slider_get_value(slider);
+    kouki_audio_out_lock();
     esp_audio_set_play_vol(val);
+    kouki_audio_out_unlock();
     if (tile != nullptr) {
         tile->update_vol_label(val);
     }
@@ -58,11 +61,23 @@ static void on_wake_sens_changed(lv_event_t* e)
     lv_obj_t* slider = lv_event_get_target(e);
     int32_t val = lv_slider_get_value(slider);
     kouki_config_set_wake_threshold(static_cast<uint8_t>(val));
-    kouki_config_save();
     if (tile != nullptr) {
         tile->update_wake_sens_label(val);
     }
-    ESP_LOGI(TAG, "чувствительность wake-word изменена: %ld%%", (long)val);
+    ESP_LOGD(TAG, "чувствительность wake-word обновлена в RAM: %ld%%", (long)val);
+}
+
+static void on_wake_sens_released(lv_event_t* e)
+{
+    auto* tile = static_cast<SettingsTile*>(lv_event_get_user_data(e));
+    if (tile != nullptr) {
+        tile->reset_inactivity();
+    }
+    lv_obj_t* slider = lv_event_get_target(e);
+    int32_t val = lv_slider_get_value(slider);
+    kouki_config_set_wake_threshold(static_cast<uint8_t>(val));
+    kouki_config_save();
+    ESP_LOGI(TAG, "чувствительность wake-word сохранена: %ld%%", (long)val);
 }
 
 static void on_silent_toggle(lv_event_t* e)
@@ -124,7 +139,9 @@ SettingsTile::SettingsTile(lv_obj_t* parent, UiStateManager* manager)
 
     // 1. Секция: Громкость
     int current_vol = 70;
+    kouki_audio_out_lock();
     esp_audio_get_play_vol(&current_vol);
+    kouki_audio_out_unlock();
 
     m_vol_label = lv_label_create(m_scroll_container);
     char vol_buf[32];
@@ -179,6 +196,7 @@ SettingsTile::SettingsTile(lv_obj_t* parent, UiStateManager* manager)
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(m_wake_slider, lv_color_hex(COLOR_ACCENT), LV_PART_KNOB);
     lv_obj_add_event_cb(m_wake_slider, on_wake_sens_changed, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(m_wake_slider, on_wake_sens_released, LV_EVENT_RELEASED, this);
 
     // 3. Секция: Режим тишины
     lv_obj_t* silent_row = lv_obj_create(m_scroll_container);
@@ -273,6 +291,9 @@ void SettingsTile::update_wake_sens_label(int val)
 
 void SettingsTile::refresh_wifi()
 {
+    m_last_wifi_seq = kouki_wifi_state_seq();
+    m_wifi_poll_ms = 0;
+
     char ip[24] = {0};
     int8_t rssi = 0;
     const char* ssid = kouki_config_get_wifi_ssid();
@@ -299,16 +320,20 @@ void SettingsTile::reset_inactivity()
 
 void SettingsTile::step(uint32_t dt_ms)
 {
+    const bool is_active = (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_SETTINGS);
+    const uint32_t wifi_seq = kouki_wifi_state_seq();
+    const bool need_immediate = (wifi_seq != m_last_wifi_seq) || (is_active && !m_was_active);
+    m_was_active = is_active;
+
     m_wifi_poll_ms += dt_ms;
-    if (m_wifi_poll_ms >= 5000) {
-        m_wifi_poll_ms = 0;
+    if (need_immediate || m_wifi_poll_ms >= WIFI_RSSI_POLL_MS) {
         refresh_wifi();
     }
 
     // Автовозврат на главный экран через 20 секунд неактивности
-    if (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_SETTINGS) {
+    if (is_active) {
         m_inactivity_ms += dt_ms;
-        if (m_inactivity_ms >= 20000) {
+        if (m_inactivity_ms >= TILE_INACTIVITY_MS) {
             m_inactivity_ms = 0;
             m_manager->focus_voice_tile(true);
         }

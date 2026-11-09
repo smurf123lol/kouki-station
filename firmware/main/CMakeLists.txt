@@ -24,6 +24,7 @@ idf_component_register(
         "./ui/states/ui_modal_screens.cpp"
         "./app_wake.c"
         "./app_tone.c"
+        "./app_audio_out.c"
         "./app_speech.c"
         "./app_ota.c"
         "./app_time.c"

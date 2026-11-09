@@ -14,6 +14,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
+#include "sdkconfig.h"
 #else
 typedef int esp_err_t;
 #define ESP_OK 0
@@ -100,13 +101,20 @@ typedef struct {
 } kouki_voice_metrics_t;
 
 /* Текущее состояние — для отрисовки из LVGL-таймера. */
-void kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
+kouki_voice_state_t kouki_voice_get_state(void);
+esp_err_t kouki_voice_dismiss_error(void);
+bool kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result);
 
 /* Метрики записи и VAD — для отрисовки дуги затухания и таймингов в UI. */
 void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics);
 
 /* Диагностика FSM: печатает состояние, время, причину и статистику в консоль. */
 void kouki_voice_print_state(void);
+
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+/* Отладочный хук только для CONFIG_KOUKI_TEST_CONSOLE_CMDS=y: переводит FSM в DONE с макетом ответа. */
+esp_err_t kouki_voice_test_mock_done(const kouki_voice_result_t *result);
+#endif
 
 #ifdef __cplusplus
 }

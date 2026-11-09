@@ -68,10 +68,8 @@ void kouki_power_notify_activity(void)
 void kouki_power_tick(uint32_t dt_ms)
 {
 #ifdef ESP_PLATFORM
-    // Проверка состояния FSM выполняется ДО захвата s_power_mutex во избежание взаимных блокировок
-    kouki_voice_state_t vstate = KOUKI_VOICE_IDLE;
-    kouki_voice_get_snapshot(&vstate, NULL);
-    if (vstate != KOUKI_VOICE_IDLE) {
+    // Проверка состояния FSM выполняется lock-free ДО захвата s_power_mutex во избежание взаимных блокировок
+    if (kouki_voice_get_state() != KOUKI_VOICE_IDLE) {
         kouki_power_notify_activity();
         return;
     }

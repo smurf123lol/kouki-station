@@ -14,8 +14,10 @@ void IdleState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     ctx.stop_requested = false;
     ctx.cancel_requested = false;
     ctx.is_wake_recording = false;
+    ctx.dialogue_continue = false;
 
 #ifdef ESP_PLATFORM
+    kouki_wake_reset();
     if (!kouki_wake_is_ready() && kouki_config_get_wake_enabled()) {
         kouki_wake_init();
     }
@@ -30,6 +32,7 @@ StateId IdleState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t samples
     if (m_start_requested) {
         m_start_requested = false;
         ctx.is_wake_recording = false;
+        ctx.dialogue_continue = false;
         return StateId::Recording;
     }
 

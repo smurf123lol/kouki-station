@@ -5,6 +5,7 @@
 #include "app_time.h"
 #include "app_wifi.h"
 #include "app_speech.h"
+#include "app_voice.h"
 #include "esp_log.h"
 
 static const char *TAG = "kouki.ui.states";
@@ -19,6 +20,8 @@ void SubIdleState::on_enter(UiContext& ctx)
     ESP_LOGD(TAG, "Enter SubIdle");
     if (ctx.orb != nullptr) {
         ctx.orb->set_mode(UiVoiceSubStateId::SUB_IDLE);
+        m_last_wifi_seq = kouki_wifi_state_seq();
+        ctx.orb->update_wifi_status(kouki_wifi_is_connected());
     }
     if (ctx.response_card != nullptr) {
         ctx.response_card->hide();
@@ -40,6 +43,12 @@ void SubIdleState::step(UiContext& ctx, uint32_t dt_ms)
     if (ctx.orb != nullptr) {
         ctx.orb->step(dt_ms);
 
+        const uint32_t wifi_seq = kouki_wifi_state_seq();
+        if (wifi_seq != m_last_wifi_seq) {
+            m_last_wifi_seq = wifi_seq;
+            ctx.orb->update_wifi_status(kouki_wifi_is_connected());
+        }
+
         m_time_poll_ms += dt_ms;
         if (m_time_poll_ms >= 1000) {
             m_time_poll_ms = 0;
@@ -48,7 +57,6 @@ void SubIdleState::step(UiContext& ctx, uint32_t dt_ms)
             kouki_time_format_hm(hm, sizeof(hm));
             kouki_time_format_date(date, sizeof(date));
             ctx.orb->update_time(hm, date);
-            ctx.orb->update_wifi_status(kouki_wifi_is_connected());
         }
     }
 }
@@ -262,6 +270,7 @@ void SubErrorState::step(UiContext& ctx, uint32_t dt_ms)
 
 void SubErrorState::on_tap(UiContext& ctx)
 {
+    kouki_voice_dismiss_error();
     if (ctx.manager != nullptr) {
         ctx.manager->transition_to(UiVoiceSubStateId::SUB_IDLE);
     }

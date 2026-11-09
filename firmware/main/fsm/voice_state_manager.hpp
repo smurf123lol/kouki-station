@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <array>
+#include <atomic>
 #include "voice_types.hpp"
 #include "voice_context.hpp"
 #include "voice_state_base.hpp"
@@ -11,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 #endif
 
 namespace kouki::voice {
@@ -45,7 +47,12 @@ public:
     void interrupt(const char* reason);
     void step(const int16_t *pcm, size_t samples);
 
-    StateId current_id() const noexcept { return m_current_id; }
+    bool try_set_session(kouki_session_t session) noexcept;
+    kouki_session_t get_session() const noexcept;
+    bool start_recording_from_button() noexcept;
+    bool stop_and_send_from_button() noexcept;
+
+    StateId current_id() const noexcept { return m_current_id.load(std::memory_order_acquire); }
     StateId previous_id() const noexcept { return m_previous_id; }
     const char* current_name() const noexcept;
     uint32_t time_in_current_state_ms() const noexcept;
@@ -56,13 +63,18 @@ public:
     const VoiceContext& context() const noexcept { return m_context; }
 
     FsmDiagnostics get_diagnostics() const noexcept;
-    void get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept;
+    bool dismiss_error() noexcept;
+    bool get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const noexcept;
     void get_metrics(kouki_voice_metrics_t *metrics) const noexcept;
 
     void publish_state(StateId st, const kouki_voice_result_t *res = nullptr) noexcept;
 
     // Вспомогательная функция для получения времени в миллисекундах
     static uint64_t get_time_ms() noexcept;
+
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+    bool force_done_for_test(const kouki_voice_result_t& res);
+#endif
 
 private:
     void transition_to_unlocked(StateId target, const char* reason);
@@ -71,7 +83,7 @@ private:
     std::array<VoiceStateBase*, STATE_COUNT> m_states{};
     VoiceStateBase* m_current_state = nullptr;
 
-    StateId m_current_id = StateId::Idle;
+    std::atomic<StateId> m_current_id{StateId::Idle};
     StateId m_previous_id = StateId::Idle;
     const char* m_last_transition_reason = "boot";
 

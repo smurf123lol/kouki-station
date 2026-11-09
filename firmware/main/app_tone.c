@@ -34,6 +34,7 @@ void kouki_tone_play(kouki_tone_t tone)
 
 #include <math.h>
 
+#include "app_audio_out.h"
 #include "esp_board_init.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -285,6 +286,7 @@ void kouki_tone_play(kouki_tone_t tone)
      * ожидая на входе чередующиеся L/R (bsp_board.c:359-416).
      */
     const int bytes = (int)(frames * 2u * sizeof(int16_t));
+    kouki_audio_out_lock();
     const esp_err_t play_err = esp_audio_play(pcm, bytes, portMAX_DELAY);
 
     /*
@@ -297,6 +299,7 @@ void kouki_tone_play(kouki_tone_t tone)
     if (play_err == ESP_OK) {
         esp_audio_play(s_tone_tail, (int)sizeof(s_tone_tail), portMAX_DELAY);
     }
+    kouki_audio_out_unlock();
 
     /* esp_audio_play пишет в кодек блокирующе — буферу он больше не нужен. */
     free(pcm);

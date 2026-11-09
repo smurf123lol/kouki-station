@@ -136,11 +136,12 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
     /* Ожидание состояния IDLE */
     ESP_LOGI(TAG, "ожидание перехода станции в состояние покоя (IDLE)…");
     while (true) {
-        kouki_voice_state_t v_state;
-        kouki_voice_get_snapshot(&v_state, NULL);
-        bool busy = (v_state == KOUKI_VOICE_RECORDING || v_state == KOUKI_VOICE_SENDING)
-                    || kouki_voice_is_recording()
-                    || kouki_speech_busy();
+        const kouki_voice_state_t v_state = kouki_voice_get_state();
+        const bool busy = (v_state != KOUKI_VOICE_IDLE)
+                          || kouki_voice_is_recording()
+                          || kouki_speech_busy()
+                          || kouki_speech_is_playing()
+                          || kouki_speech_worker_active();
         if (!busy) {
             break;
         }

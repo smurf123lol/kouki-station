@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "esp_log.h"
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
@@ -14,6 +15,9 @@ static const char *TAG __attribute__((unused)) = "kouki.config";
 
 static kouki_config_t s_cfg;
 static bool s_initialized = false;
+static atomic_bool s_atomic_silent;
+static atomic_bool s_atomic_wake_en;
+static atomic_uint_fast32_t s_atomic_wake_th;
 
 static void set_defaults(void)
 {
@@ -27,6 +31,9 @@ static void set_defaults(void)
 #endif
     s_cfg.wake_en = (KOUKI_CONFIG_DEFAULT_WAKE_ENABLED != 0);
     s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
+    atomic_store_explicit(&s_atomic_silent, s_cfg.silent, memory_order_release);
+    atomic_store_explicit(&s_atomic_wake_en, s_cfg.wake_en, memory_order_release);
+    atomic_store_explicit(&s_atomic_wake_th, s_cfg.wake_th, memory_order_release);
 }
 
 esp_err_t kouki_config_init(void)
@@ -104,6 +111,10 @@ esp_err_t kouki_config_init(void)
     } else {
         s_cfg.wake_th = KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
     }
+
+    atomic_store_explicit(&s_atomic_silent, s_cfg.silent, memory_order_release);
+    atomic_store_explicit(&s_atomic_wake_en, s_cfg.wake_en, memory_order_release);
+    atomic_store_explicit(&s_atomic_wake_th, s_cfg.wake_th, memory_order_release);
 
     nvs_close(handle);
     s_initialized = true;
@@ -346,19 +357,21 @@ esp_err_t kouki_config_erase(void)
 
 bool kouki_config_get_wake_enabled(void)
 {
-    return s_cfg.wake_en;
+    return atomic_load_explicit(&s_atomic_wake_en, memory_order_acquire);
 }
 
 esp_err_t kouki_config_set_wake_enabled(bool enabled)
 {
+    atomic_store_explicit(&s_atomic_wake_en, enabled, memory_order_release);
     s_cfg.wake_en = enabled;
     return ESP_OK;
 }
 
 uint8_t kouki_config_get_wake_threshold(void)
 {
-    return (s_cfg.wake_th >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD && s_cfg.wake_th <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD)
-        ? s_cfg.wake_th : KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
+    uint32_t th = (uint32_t)atomic_load_explicit(&s_atomic_wake_th, memory_order_acquire);
+    return (th >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD && th <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD)
+        ? (uint8_t)th : KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD;
 }
 
 esp_err_t kouki_config_set_wake_threshold(uint8_t threshold)
@@ -366,17 +379,19 @@ esp_err_t kouki_config_set_wake_threshold(uint8_t threshold)
     if (threshold < KOUKI_CONFIG_MIN_WAKE_THRESHOLD || threshold > KOUKI_CONFIG_MAX_WAKE_THRESHOLD) {
         return ESP_ERR_INVALID_ARG;
     }
+    atomic_store_explicit(&s_atomic_wake_th, threshold, memory_order_release);
     s_cfg.wake_th = threshold;
     return ESP_OK;
 }
 
 bool kouki_config_is_silent(void)
 {
-    return s_cfg.silent;
+    return atomic_load_explicit(&s_atomic_silent, memory_order_acquire);
 }
 
 void kouki_config_set_silent(bool silent)
 {
+    atomic_store_explicit(&s_atomic_silent, silent, memory_order_release);
     s_cfg.silent = silent;
 }
 

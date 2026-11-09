@@ -1,8 +1,9 @@
 #include "app_history.h"
 
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include "app_time.h"
 
 #ifdef ESP_PLATFORM
@@ -18,6 +19,7 @@ static SemaphoreHandle_t s_history_mutex = NULL;
 static kouki_history_item_t *s_items = NULL;
 static size_t s_head = 0;   // Следующая позиция для записи
 static size_t s_count = 0;  // Текущее число элементов (0..KOUKI_HISTORY_CAPACITY)
+static atomic_uint_fast32_t s_version = ATOMIC_VAR_INIT(0);
 
 void kouki_history_init(void)
 {
@@ -49,6 +51,7 @@ void kouki_history_init(void)
 
     s_head = 0;
     s_count = 0;
+    atomic_store_explicit(&s_version, 0, memory_order_release);
 }
 
 void kouki_history_push(const kouki_voice_result_t *res)
@@ -62,22 +65,13 @@ void kouki_history_push(const kouki_voice_result_t *res)
         return;
     }
 
-    kouki_history_item_t item;
-    memset(&item, 0, sizeof(item));
+    char hm[16] = {0};
+    kouki_time_format_hm(hm, sizeof(hm));
 
-    strncpy(item.transcript, res->transcript, sizeof(item.transcript) - 1);
-    strncpy(item.title, res->task_title, sizeof(item.title) - 1);
-    strncpy(item.answer, res->answer, sizeof(item.answer) - 1);
-    strncpy(item.outcome, res->outcome, sizeof(item.outcome) - 1);
-
-    kouki_time_format_hm(item.timestamp_hm, sizeof(item.timestamp_hm));
-
-    if (strcmp(res->outcome, "created") == 0 || res->task_title[0] != '\0' || strstr(res->intent, "task") != NULL) {
-        item.is_task = true;
-    }
-    if (res->answer[0] != '\0' || strcmp(res->intent, "ask") == 0) {
-        item.is_answer = true;
-    }
+    const bool is_task = (strcmp(res->outcome, "created") == 0 ||
+                          res->task_title[0] != '\0' ||
+                          strstr(res->intent, "task") != NULL);
+    const bool is_answer = (res->answer[0] != '\0' || strcmp(res->intent, "ask") == 0);
 
 #ifdef ESP_PLATFORM
     if (s_history_mutex) {
@@ -85,18 +79,43 @@ void kouki_history_push(const kouki_voice_result_t *res)
     }
 #endif
 
-    s_items[s_head] = item;
+    kouki_history_item_t *slot = &s_items[s_head];
+    memset(slot, 0, sizeof(*slot));
+
+    strncpy(slot->transcript, res->transcript, sizeof(slot->transcript) - 1);
+    strncpy(slot->title, res->task_title, sizeof(slot->title) - 1);
+    strncpy(slot->answer, res->answer, sizeof(slot->answer) - 1);
+    strncpy(slot->outcome, res->outcome, sizeof(slot->outcome) - 1);
+    strncpy(slot->timestamp_hm, hm, sizeof(slot->timestamp_hm) - 1);
+    slot->is_task = is_task;
+    slot->is_answer = is_answer;
+
     s_head = (s_head + 1) % KOUKI_HISTORY_CAPACITY;
     if (s_count < KOUKI_HISTORY_CAPACITY) {
         s_count++;
     }
+    atomic_fetch_add_explicit(&s_version, 1, memory_order_release);
 
 #ifdef ESP_PLATFORM
+    const size_t total = s_count;
+    char preview[64];
+    const char *src = slot->transcript[0] ? slot->transcript : slot->answer;
+    size_t cut = 0;
+    const size_t max_bytes = sizeof(preview) - 1;
+    while (src[cut] != '\0' && cut < max_bytes) {
+        cut++;
+    }
+    while (cut > 0 && (((unsigned char)src[cut] & 0xC0u) == 0x80u)) {
+        cut--;
+    }
+    memcpy(preview, src, cut);
+    preview[cut] = '\0';
+
     if (s_history_mutex) {
         xSemaphoreGive(s_history_mutex);
     }
     ESP_LOGI(TAG, "Добавлена запись в историю (всего: %u): '%s'",
-             (unsigned)s_count, item.transcript[0] ? item.transcript : item.answer);
+             (unsigned)total, preview);
 #endif
 }
 
@@ -115,6 +134,11 @@ size_t kouki_history_count(void)
     }
 #endif
     return count;
+}
+
+uint32_t kouki_history_version(void)
+{
+    return (uint32_t)atomic_load_explicit(&s_version, memory_order_acquire);
 }
 
 bool kouki_history_get(size_t index, kouki_history_item_t *out_item)
@@ -164,6 +188,7 @@ void kouki_history_clear(void)
     if (s_items) {
         memset(s_items, 0, sizeof(kouki_history_item_t) * KOUKI_HISTORY_CAPACITY);
     }
+    atomic_fetch_add_explicit(&s_version, 1, memory_order_release);
 
 #ifdef ESP_PLATFORM
     if (s_history_mutex) {

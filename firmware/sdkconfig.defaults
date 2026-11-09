@@ -1,6 +1,9 @@
 # Настройки под esp32s3 с 8 МБ PSRAM (Octal) и 16 МБ Flash — как у ESP32-S3-Touch-LCD-1.85C V2.
 CONFIG_IDF_TARGET="esp32s3"
 
+# Запас стека main-задачи для рекурсивного layout LVGL (TileView + Flex карточки Истории и Настроек).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # PSRAM: буфер записи голоса живёт в PSRAM, 15 секунд 16 кГц моно — это ~480 КБ.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

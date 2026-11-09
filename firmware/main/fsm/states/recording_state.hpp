@@ -18,6 +18,7 @@ private:
     uint64_t m_record_start_ms = 0;
     uint32_t m_min_amplitude = 120;
     uint32_t m_vad_silence_ms = 3000;
+    uint32_t m_followup_silence_ms = 1500;
     uint32_t m_max_record_ms = 15000;
 };
 

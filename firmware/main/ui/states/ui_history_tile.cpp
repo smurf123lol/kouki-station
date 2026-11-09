@@ -4,6 +4,8 @@
 #include "esp_log.h"
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace kouki::ui {
 
@@ -74,30 +76,36 @@ void HistoryTile::reset_inactivity()
 
 void HistoryTile::refresh()
 {
-    size_t count = kouki_history_count();
-    m_last_history_count = count;
+    // Читаем версию до копирования, но фиксируем m_last_history_version только после успешного выделения буфера
+    const uint32_t ver = kouki_history_version();
+    const size_t count = kouki_history_count();
 
     if (count == 0) {
-        m_last_top_transcript[0] = '\0';
+        m_last_history_version = ver;
         lv_obj_clear_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clean(m_list_container);
         return;
     }
 
-    kouki_history_item_t top;
-    if (kouki_history_get(0, &top)) {
-        strncpy(m_last_top_transcript, top.transcript, sizeof(m_last_top_transcript) - 1);
-        m_last_top_transcript[sizeof(m_last_top_transcript) - 1] = '\0';
+    struct RefreshScratch {
+        kouki_history_item_t item;
+        char hdr[64];
+        char text[520];
+    };
+    std::unique_ptr<RefreshScratch> scratch(new (std::nothrow) RefreshScratch{});
+    if (!scratch) {
+        return;
     }
+    m_last_history_version = ver;
 
     lv_obj_add_flag(m_empty_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clean(m_list_container);
 
     for (size_t i = 0; i < count; i++) {
-        kouki_history_item_t item;
-        if (!kouki_history_get(i, &item)) {
+        if (!kouki_history_get(i, &scratch->item)) {
             continue;
         }
+        const kouki_history_item_t& item = scratch->item;
 
         // Карточка записи
         lv_obj_t* card = lv_obj_create(m_list_container);
@@ -114,37 +122,34 @@ void HistoryTile::refresh()
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
         // Заголовок карточки: "18:05 • Вопрос"
-        char hdr[64];
-        snprintf(hdr, sizeof(hdr), "%s • %s",
+        snprintf(scratch->hdr, sizeof(scratch->hdr), "%s • %s",
                  item.timestamp_hm[0] != '\0' ? item.timestamp_hm : "--:--",
                  item.is_task ? "Задача" : "Вопрос");
         lv_obj_t* lbl_hdr = lv_label_create(card);
-        lv_label_set_text(lbl_hdr, hdr);
+        lv_label_set_text(lbl_hdr, scratch->hdr);
         lv_obj_set_style_text_font(lbl_hdr, &font_ru_14, 0);
         lv_obj_set_style_text_color(lbl_hdr, lv_color_hex(item.is_task ? COLOR_OK : COLOR_DIM), 0);
 
         // Цитата запроса
         if (item.transcript[0] != '\0') {
-            char q[220];
-            snprintf(q, sizeof(q), "«%s»", item.transcript);
-            utf8_trim_tail(q);
+            snprintf(scratch->text, sizeof(scratch->text), "«%s»", item.transcript);
+            utf8_trim_tail(scratch->text);
             lv_obj_t* lbl_q = lv_label_create(card);
             lv_label_set_long_mode(lbl_q, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(lbl_q, 256);
-            lv_label_set_text(lbl_q, q);
+            lv_label_set_text(lbl_q, scratch->text);
             lv_obj_set_style_text_font(lbl_q, &font_ru_14, 0);
             lv_obj_set_style_text_color(lbl_q, lv_color_hex(COLOR_SAND), 0);
         }
 
         // Ответ или статус
         if (item.is_answer && item.answer[0] != '\0') {
-            char ans[512];
-            snprintf(ans, sizeof(ans), "%s", item.answer);
-            utf8_trim_tail(ans);
+            snprintf(scratch->text, sizeof(scratch->text), "%s", item.answer);
+            utf8_trim_tail(scratch->text);
             lv_obj_t* lbl_ans = lv_label_create(card);
             lv_label_set_long_mode(lbl_ans, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(lbl_ans, 256);
-            lv_label_set_text(lbl_ans, ans);
+            lv_label_set_text(lbl_ans, scratch->text);
             lv_obj_set_style_text_font(lbl_ans, &font_ru_14, 0);
             lv_obj_set_style_text_color(lbl_ans, lv_color_hex(COLOR_DIM), 0);
         } else if (item.is_task) {
@@ -158,31 +163,21 @@ void HistoryTile::refresh()
 
 void HistoryTile::step(uint32_t dt_ms)
 {
-    bool is_active = (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_HISTORY);
-    if (is_active && !m_was_active) {
-        refresh();
+    const bool is_active = (m_manager != nullptr && m_manager->get_active_tile() == TileId::TILE_HISTORY);
+    if (is_active && !m_was_active && m_list_container != nullptr) {
+        lv_obj_scroll_to_y(m_list_container, 0, LV_ANIM_OFF);
     }
     m_was_active = is_active;
 
-    // Проверка новых записей в истории (включая случай, когда буфер полон 10/10 и вытесняется элемент)
-    size_t count = kouki_history_count();
-    bool need_refresh = (count != m_last_history_count);
-    if (!need_refresh && count > 0) {
-        kouki_history_item_t top;
-        if (kouki_history_get(0, &top)) {
-            if (strncmp(top.transcript, m_last_top_transcript, sizeof(m_last_top_transcript)) != 0) {
-                need_refresh = true;
-            }
-        }
-    }
-    if (need_refresh) {
+    // O(1) проверка изменений без копирования kouki_history_item_t на стек UI-потока
+    if (kouki_history_version() != m_last_history_version) {
         refresh();
     }
 
     // Автовозврат на главный экран через 20 секунд неактивности
     if (is_active) {
         m_inactivity_ms += dt_ms;
-        if (m_inactivity_ms >= 20000) {
+        if (m_inactivity_ms >= TILE_INACTIVITY_MS) {
             m_inactivity_ms = 0;
             m_manager->focus_voice_tile(true);
         }

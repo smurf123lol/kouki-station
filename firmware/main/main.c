@@ -6,6 +6,7 @@
  * ST77916) → LVGL. Аудио раньше экрана, потому что расширитель GPIO и тач
  * живут на I2C, который поднимает именно аудио-борда.
  */
+#include "app_audio_out.h"
 #include "app_config.h"
 #include "app_history.h"
 #include "app_ota.h"
@@ -106,7 +107,9 @@ static void kouki_player_init(void)
     }
 #endif
 
+    kouki_audio_out_lock();
     const esp_err_t vol_err = esp_audio_set_play_vol(CONFIG_KOUKI_PLAYER_VOLUME);
+    kouki_audio_out_unlock();
     if (vol_err == ESP_OK) {
         ESP_LOGI(TAG, "громкость выхода: %d %%", CONFIG_KOUKI_PLAYER_VOLUME);
     } else {
@@ -155,6 +158,7 @@ void app_main(void)
      * затем LCD и LVGL.
      */
     ESP_ERROR_CHECK(esp_board_init(16000, 2, 16));
+    ESP_ERROR_CHECK(kouki_audio_out_init());
     kouki_player_init();
     EXIO_Init();
     LCD_Init();
