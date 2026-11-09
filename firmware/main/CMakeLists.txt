@@ -6,6 +6,7 @@ idf_component_register(
         "./app_wifi.c"
         "./app_http.c"
         "./app_voice.cpp"
+        "./app_vad.c"
         "./fsm/voice_state_manager.cpp"
         "./fsm/voice_response_parser.cpp"
         "./fsm/states/idle_state.cpp"

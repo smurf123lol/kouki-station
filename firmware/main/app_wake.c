@@ -376,7 +376,7 @@ bool kouki_wake_feed(const int16_t *pcm, int samples)
                     }
                 }
 
-                if (window_max < 250) {
+                if (window_max < 500) {
                     s_consecutive_hits = 0;
                     continue;
                 }

@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+static const char *TAG = "kouki.fsm";
 #endif
 
 namespace kouki::voice {
@@ -150,14 +151,6 @@ StateId DoneState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t samples
     }
 
     const uint64_t now = static_cast<uint64_t>(esp_timer_get_time() / 1000);
-    const bool has_answer = (ctx.result.answer[0] != '\0');
-    const bool enable_followup = (has_answer && std::strcmp(ctx.result.intent, "ask") == 0) ||
-                                 ctx.result.requires_confirmation
-#if CONFIG_KOUKI_FOLLOWUP_TASK_ENABLED
-                                 || true
-#endif
-                                 ;
-
     // 2. Если речь не озвучивалась (тихий режим, сбой TTS, [Задача записана]),
     //    удерживаем карточку минимум 2.5 с, чтобы её можно было прочесть.
     const bool tts_completed = m_speech_started.load() && m_speech_finished.load() && m_speech_ok.load();
@@ -171,14 +164,53 @@ StateId DoneState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t samples
         }
         return StateId::Stay;
     }
-
-    if (enable_followup && kouki_wifi_is_connected() && CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0) {
-        return StateId::Followup;
-    }
-#else
-    (void)ctx;
 #endif
 
+    const bool has_answer = (ctx.result.answer[0] != '\0');
+    const bool has_transcript = (ctx.result.transcript[0] != '\0');
+    const bool has_error = (ctx.result.error[0] != '\0');
+
+    // Если транскрипт пуст (тишина/шум) или пришла ошибка — follow-up запрещён, streak сбрасываем
+    if (!has_transcript || has_error) {
+        ctx.followup_streak = 0;
+        ctx.dialogue_continue = false;
+        return StateId::Idle;
+    }
+
+    const bool is_ask = (has_answer && std::strcmp(ctx.result.intent, "ask") == 0);
+    const bool enable_followup = (is_ask || ctx.result.requires_confirmation
+#if defined(ESP_PLATFORM) && CONFIG_KOUKI_FOLLOWUP_TASK_ENABLED
+                                  || true
+#endif
+                                 );
+
+#ifdef ESP_PLATFORM
+    const bool wifi_ok = kouki_wifi_is_connected();
+    const bool window_ok = (CONFIG_KOUKI_FOLLOWUP_WINDOW_MS > 0);
+#else
+    const bool wifi_ok = true;
+    const bool window_ok = true;
+#endif
+
+    if (enable_followup && wifi_ok && window_ok) {
+        // Ограничение серии follow-up: не более 3 ходов подряд (защита от циклов)
+        if (ctx.followup_streak >= 3) {
+#ifdef ESP_PLATFORM
+            ESP_LOGI(TAG, "Достигнут лимит цепочки диалога (followup_streak=%u), выход в IDLE",
+                     (unsigned)ctx.followup_streak);
+#endif
+            ctx.followup_streak = 0;
+            ctx.dialogue_continue = false;
+            return StateId::Idle;
+        }
+        ctx.followup_streak++;
+#ifdef ESP_PLATFORM
+        ESP_LOGI(TAG, "Переход в FOLLOWUP (шаг %u из 3)", (unsigned)ctx.followup_streak);
+#endif
+        return StateId::Followup;
+    }
+
+    ctx.followup_streak = 0;
     ctx.dialogue_continue = false;
     return StateId::Idle;
 }

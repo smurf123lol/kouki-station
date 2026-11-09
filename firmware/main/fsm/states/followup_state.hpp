@@ -5,7 +5,8 @@
 
 namespace kouki::voice {
 
-constexpr uint64_t FOLLOWUP_SETTLE_GUARD_MS = 350;
+constexpr uint64_t FOLLOWUP_SETTLE_GUARD_MS = 800;
+constexpr uint32_t FOLLOWUP_SPEECH_STREAK_FRAMES = 3;
 constexpr uint32_t FOLLOWUP_SPEECH_STREAK_CHUNKS = 2;
 
 class FollowupState final : public VoiceStateBase {

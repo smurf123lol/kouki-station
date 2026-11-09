@@ -753,7 +753,7 @@ esp_err_t kouki_speech_play_gen(const char *text, uint32_t gen)
 
     /* Кулдаун 350 мс после речи для рассеивания реверберации — только при штатном завершении. */
     if (played_any && err == ESP_OK && !speech_is_gen_aborted(gen)) {
-        kouki_wake_mute(350);
+        kouki_wake_mute(800);
     }
 
 worker_cleanup:

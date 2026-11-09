@@ -1,4 +1,5 @@
 #include "followup_state.hpp"
+#include "app_vad.h"
 #include <cstring>
 
 #ifdef ESP_PLATFORM
@@ -12,13 +13,10 @@
 
 namespace kouki::voice {
 
-bool FollowupState::evaluate_speech_chunk(const int16_t *pcm, size_t samples, uint32_t threshold) noexcept {
-    if (VoiceContext::is_chunk_loud(pcm, samples, threshold)) {
-        m_loud_streak++;
-        return m_loud_streak >= FOLLOWUP_SPEECH_STREAK_CHUNKS;
-    }
-    m_loud_streak = 0;
-    return false;
+bool FollowupState::evaluate_speech_chunk(const int16_t *pcm, size_t samples, uint32_t /*threshold*/) noexcept {
+    kouki_vad_process(pcm, samples);
+    m_loud_streak = kouki_vad_get_speech_streak();
+    return kouki_vad_is_speech_streak(FOLLOWUP_SPEECH_STREAK_FRAMES);
 }
 
 void FollowupState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
@@ -26,6 +24,7 @@ void FollowupState::on_enter(VoiceContext& ctx, const char* /*reason*/) {
     m_start_requested = false;
     m_loud_streak = 0;
     ctx.dialogue_continue = false;
+    kouki_vad_reset();
 
 #ifdef ESP_PLATFORM
     kouki_wake_reset();
@@ -51,6 +50,7 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
         ctx.session = KOUKI_SESSION_ASK;
         ctx.is_wake_recording = false;
         ctx.dialogue_continue = false;
+        kouki_vad_reset();
         return StateId::Recording;
     }
 
@@ -67,6 +67,7 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
     // Защита от самовозбуждения: пока динамик ещё звучит или реверберация не утихла — не слушаем
     if (kouki_speech_is_playing() || kouki_speech_busy() || now < m_listen_after_ms) {
         m_loud_streak = 0;
+        kouki_vad_reset();
         return StateId::Stay;
     }
 
@@ -75,14 +76,12 @@ StateId FollowupState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sam
         if (kouki_wake_is_ready() && kouki_wake_feed(pcm, static_cast<int>(samples))) {
             ctx.is_wake_recording = true;
             ctx.dialogue_continue = false;
+            kouki_vad_reset();
             return StateId::Recording;
         }
 
-        // 2) Проверяем устойчивое начало речи (минимум 2 громких чанка подряд ~128 мс, порог 2x от пола тишины)
-        const uint32_t speech_chunk_th = (CONFIG_KOUKI_MIN_AMPLITUDE > 0)
-            ? static_cast<uint32_t>(CONFIG_KOUKI_MIN_AMPLITUDE) * 2U
-            : 1U;
-        if (evaluate_speech_chunk(pcm, samples, speech_chunk_th)) {
+        // 2) Проверяем спектральную речь через WebRTC VAD (минимум 3 фрейма по 30 мс подряд = 90 мс)
+        if (evaluate_speech_chunk(pcm, samples, 0)) {
             ctx.session = KOUKI_SESSION_ASK;
             ctx.dialogue_continue = true;
             ctx.is_wake_recording = false;
