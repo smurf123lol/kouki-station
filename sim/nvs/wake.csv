@@ -1,0 +1,12 @@
+key,type,encoding,value
+kouki_config,namespace,,
+cfg_ver,data,u8,1
+wifi_ssid,data,string,kouki-sim
+wifi_pass,data,string,kouki-pass
+srv_url,data,string,http://192.168.1.157:5300
+srv_token,data,string,kouki-demo
+dev_source,data,string,station
+ota_int_s,data,u32,43200
+silent,data,u8,0
+wake_en,data,u8,1
+wake_th,data,u8,65

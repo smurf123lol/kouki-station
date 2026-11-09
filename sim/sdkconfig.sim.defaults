@@ -1,0 +1,6 @@
+# Sim-сборка стенда esp32sim (T120).
+# Подключается флагом tools/build-linux.sh --sim; в обычную сборку не входит.
+# Тестовые команды консоли нужны сценариям стенда (test_seed_history,
+# test_mock_done): иначе на запрос из .scenario прошивка отвечает
+# «Неизвестная команда».
+CONFIG_KOUKI_TEST_CONSOLE_CMDS=y
