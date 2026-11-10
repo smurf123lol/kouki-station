@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "./main.c"
+        "./kouki_api.cpp"
         "./app_config.cpp"
         "./app_setup.cpp"
         "./app_wifi.cpp"

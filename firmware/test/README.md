@@ -25,6 +25,7 @@ tools/test-host.sh --help   # справка
 | `test_speech_host.c` | реальный `app_speech.cpp` (t116, C-стенд): WAV/стерео, нарезка по фразам, блокировки аудио, abort/поколения, EAGAIN |
 | `test_speech.cpp` | `kouki::Speech` (t121 П10): границы `wav_parse`/`stereo_expand`, состояние busy/playing/worker, равенство фасада и методов класса |
 | `test_setup.cpp` | `kouki::Setup` (t121 П11): имя SoftAP из MAC, регистрация маршрутов, валидации формы `/save`, консольные команды и подъём USB-Serial-JTAG консоли |
+| `test_station.cpp` | `kouki_api` (t121 П13): порядок инициализации 1:1 с прежним `app_main`, состав объектного графа и порядок зависимостей, `main.c` как C-точка входа, тексты логов и C-фасад |
 | `test_config.cpp` | реальный `app_config.cpp`: `kouki::Config` на моке NVS (ключи 1:1, миграция `wake_mig`, `save`/`erase`, `is_complete`, маскирование секретов) |
 | `support/` | заглушки `esp_err.h`, `esp_log.h`, `esp_app_desc.h`, `esp_board_init.h`, `lvgl_mock.hpp` |
 | `support/speech/` | заглушки esp_http_client/heap/freertos, `sdkconfig.h`, `stubs.c` (кодек/HTTP) и `speech_factories.cpp` (фабрика `kouki::audio_out()` без worker'а) для стенда озвучки |

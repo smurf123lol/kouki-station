@@ -379,4 +379,16 @@ run "voice build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_voice_bin"
 run "voice run" "$OBJ_DIR/test_voice_bin"
 
+echo "=== t121: Station (объектный граф и порядок init: main.c остаётся C) ==="
+# Порядок инициализации проверяется по исходникам kouki_api.cpp и main.c:
+# на хосте station_init() не собрать (esp_board_init/LVGL/esp-sr). Стенд
+# читает файлы через KOUKI_MAIN_DIR, вырезает комментарии и сверяет
+# последовательность вызовов с прежним app_main master (db4bd1b:160-173).
+run "station build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$SUPPORT" -I"$CFG_MOCK" -I"$MAIN" \
+    -DKOUKI_MAIN_DIR="\"$MAIN\"" \
+    "$TEST/test_station.cpp" \
+    -o "$OBJ_DIR/test_station_bin"
+run "station run" "$OBJ_DIR/test_station_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="
