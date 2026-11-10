@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Host-стенды станции Kouki: собирает и прогоняет все host-тесты одной командой.
+#
+# Без ESP-IDF и без esp-idf тулчейна: только системные gcc/g++, заглушки
+# платформы лежат в firmware/test/support/. Объекты и бинарники складываются
+# вне репозитория — в $WORKSPACE/_scratch/test-host-obj.
+#
+# Коды возврата: 0 — все PASS, 1 — падение проверки/сборки,
+#                2 — неверные аргументы, 3 — нет gcc/g++.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MAIN="$ROOT/firmware/main"
+TEST="$ROOT/firmware/test"
+SUPPORT="$TEST/support"
+CJSON_DIR="$SUPPORT/cjson"
+SPEECH="$SUPPORT/speech"
+
+usage() {
+    cat <<'EOF'
+Использование: tools/test-host.sh [--help]
+
+Собирает и прогоняет host-стенды прошивки (FSM, платформенное поведение,
+UI-автоматы, озвучка) на хосте — без ESP-IDF, только gcc/g++.
+
+  -h, --help   показать эту справку и выйти (код 0)
+
+Переменные окружения:
+  WORKSPACE    каталог воркспейса; объекты и бинарники пишутся в
+               $WORKSPACE/_scratch/test-host-obj (по умолчанию воркспейс
+               определяется автоматически: для дерева в _scratch/wt/<...>
+               берётся каталог над _scratch, иначе родитель репозитория).
+  CC, CXX      компиляторы C и C++ (по умолчанию gcc и g++).
+
+Коды возврата: 0 — все проверки прошли, 1 — падение проверки или сборки,
+               2 — неверные аргументы, 3 — не найден gcc/g++.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "test-host: неизвестный аргумент: $arg" >&2
+        echo "test-host: справка — tools/test-host.sh --help" >&2
+        exit 2
+        ;;
+    esac
+done
+
+CC="${CC:-gcc}"
+CXX="${CXX:-g++}"
+for tool in "$CC" "$CXX"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "test-host: не найден компилятор '$tool' (нужны gcc и g++)" >&2
+        exit 3
+    fi
+done
+
+# Каталог для объектов вне репозитория: в самом репозитории ничего не оставляем.
+if [ -z "${WORKSPACE:-}" ]; then
+    case "$ROOT" in
+    */_scratch/wt/*) WORKSPACE="${ROOT%%/_scratch/wt/*}" ;;
+    *) WORKSPACE="$(cd "$ROOT/.." && pwd)" ;;
+    esac
+fi
+OBJ_DIR="$WORKSPACE/_scratch/test-host-obj"
+rm -rf "$OBJ_DIR"
+mkdir -p "$OBJ_DIR"
+
+# Тесты не должны попадать в образ прошивки: main/CMakeLists.txt собирает
+# только свои SRCS, каталог firmware/test/ он не перечисляет.
+if grep -q 'firmware/test\|"\./test/\|"test/' "$MAIN/CMakeLists.txt"; then
+    echo "test-host: firmware/test попал в SRCS сборки образа (firmware/main/CMakeLists.txt)" >&2
+    exit 1
+fi
+
+FSM_CPP=(
+    "$MAIN/fsm/voice_state_manager.cpp"
+    "$MAIN/fsm/voice_response_parser.cpp"
+    "$MAIN/fsm/states/idle_state.cpp"
+    "$MAIN/fsm/states/recording_state.cpp"
+    "$MAIN/fsm/states/sending_state.cpp"
+    "$MAIN/fsm/states/done_state.cpp"
+    "$MAIN/fsm/states/error_state.cpp"
+    "$MAIN/fsm/states/followup_state.cpp"
+)
+
+UI_CPP=(
+    "$MAIN/ui/ui_state_manager.cpp"
+    "$MAIN/ui/states/ui_voice_substates.cpp"
+    "$MAIN/ui/states/ui_history_tile.cpp"
+    "$MAIN/ui/states/ui_settings_tile.cpp"
+    "$MAIN/ui/states/ui_modal_screens.cpp"
+    "$MAIN/ui/widgets/ui_orb_widget.cpp"
+    "$MAIN/ui/widgets/ui_card_widget.cpp"
+)
+
+# run <имя> <команда...>: выполняет шаг; при ошибке печатает FAIL и выходит с кодом 1.
+run() {
+    local name="$1"
+    shift
+    if ! "$@"; then
+        echo "test-host: FAIL в шаге '$name'" >&2
+        exit 1
+    fi
+}
+
+echo "=== Компиляция C-модулей (-Wall -Wextra) ==="
+run "app_history.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.c" -o "$OBJ_DIR/app_history.o"
+run "app_time.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_time.c" -o "$OBJ_DIR/app_time.o"
+run "app_power.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_power.c" -o "$OBJ_DIR/app_power.o"
+run "app_audio_out.c" "$CC" -std=gnu11 -Wall -Wextra -I"$SUPPORT" -I"$MAIN" -c "$MAIN/app_audio_out.c" -o "$OBJ_DIR/app_audio_out.o"
+run "app_vad.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.c" -o "$OBJ_DIR/app_vad.o"
+run "cJSON.c" "$CC" -std=gnu11 -O2 -I"$CJSON_DIR" -c "$CJSON_DIR/cJSON.c" -o "$OBJ_DIR/cJSON.o"
+
+echo "=== t111: C++ Voice FSM Suite ==="
+run "t111 build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$MAIN" -I"$MAIN/fsm" -I"$CJSON_DIR" \
+    "$TEST/test_fsm.cpp" \
+    "${FSM_CPP[@]}" \
+    "$OBJ_DIR/app_history.o" "$OBJ_DIR/app_time.o" "$OBJ_DIR/app_vad.o" "$OBJ_DIR/cJSON.o" \
+    -o "$OBJ_DIR/test_fsm_bin"
+run "t111 run" "$OBJ_DIR/test_fsm_bin"
+
+echo "=== t114: Platform Behavior ==="
+run "t114 build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$MAIN" -I"$MAIN/fsm" -I"$CJSON_DIR" \
+    "$TEST/test_platform_behavior.cpp" \
+    "${FSM_CPP[@]}" \
+    "$OBJ_DIR/app_history.o" "$OBJ_DIR/app_time.o" "$OBJ_DIR/app_power.o" "$OBJ_DIR/app_vad.o" "$OBJ_DIR/cJSON.o" \
+    -lm \
+    -o "$OBJ_DIR/test_platform_bin"
+run "t114 run" "$OBJ_DIR/test_platform_bin"
+
+echo "=== t115: Real UI C++ classes ==="
+run "t115 build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$SUPPORT" -I"$MAIN" -I"$MAIN/ui" \
+    "$TEST/test_ui_statemachine.cpp" \
+    "${UI_CPP[@]}" \
+    "$OBJ_DIR/app_history.o" "$OBJ_DIR/app_time.o" \
+    -lm \
+    -o "$OBJ_DIR/test_ui_bin"
+run "t115 run" "$OBJ_DIR/test_ui_bin"
+
+echo "=== t116/t118: speech hostcheck (real app_speech.c + locks + abort gen) ==="
+run "speech build" "$CC" -std=gnu11 -Wall -Wextra -pthread \
+    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
+    "$MAIN/app_speech.c" \
+    "$TEST/test_speech_host.c" \
+    "$SPEECH/stubs.c" \
+    "$OBJ_DIR/cJSON.o" \
+    -pthread \
+    -o "$OBJ_DIR/test_speech_bin"
+run "speech run" "$OBJ_DIR/test_speech_bin"
+
+echo "=== ALL HOSTCHECKS PASSED ==="
