@@ -30,7 +30,7 @@ idf_component_register(
         "./app_speech.c"
         "./app_ota.c"
         "./app_time.cpp"
-        "./app_power.c"
+        "./app_power.cpp"
         "./app_history.cpp"
         # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md
         "./drivers/exio/TCA9554PWR.c"

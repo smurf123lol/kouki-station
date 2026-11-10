@@ -11,6 +11,8 @@
 
 #include "app_history.h"
 #include "app_history.hpp"
+#include "app_power.h"
+#include "app_power.hpp"
 #include "app_time.h"
 #include "app_time.hpp"
 
@@ -182,9 +184,81 @@ static void test_history() {
     CHECK(!kouki_history_get(0, &item), "get(0) after clear -> false");
 }
 
+// --------------------------------------------------------------- Power -----
+
+static void test_power() {
+    std::printf("[TEST] 3. Power: димминг, насыщение, активность, фасад...\n");
+
+    CHECK(&kouki::power() == &kouki::power(), "power() returns the same instance");
+
+    // Повторный init() сбрасывает состояние.
+    kouki_power_init();
+    kouki_power_init();
+    CHECK(kouki_power_get_brightness() == 100, "init -> brightness 100");
+    CHECK(kouki_power_get_idle_ms() == 0, "init -> idle 0");
+
+    // 30 с покоя — яркость ещё 100%.
+    for (int i = 0; i < 30; i++) {
+        kouki_power_tick(1000);
+    }
+    CHECK(kouki_power_get_idle_ms() == 30000, "idle 30000 after 30 s");
+    CHECK(kouki_power_get_brightness() == 100, "brightness 100 at 30 s");
+    CHECK(kouki::power().idle_ms() == 30000, "facade idle == class idle");
+    CHECK(kouki::power().brightness() == 100, "facade brightness == class brightness");
+
+    // Переход через порог 45 с: яркость плавно уходит к 20%.
+    kouki_power_tick(1000);  // 31
+    kouki_power_tick(1000);  // ... порог ещё не пройден
+    for (int i = 0; i < 20; i++) {
+        kouki_power_tick(1000);
+    }
+    CHECK(kouki_power_get_idle_ms() == 52000, "idle 52000");
+    CHECK(kouki_power_get_brightness() == 20, "brightness dimmed to 20");
+
+    // 0-мс тик не меняет idle и не ломает яркость.
+    const uint32_t before = kouki_power_get_idle_ms();
+    kouki_power_tick(0);
+    CHECK(kouki_power_get_idle_ms() == before, "tick(0) keeps idle");
+
+    // До 179 с держится 20%.
+    while (kouki_power_get_idle_ms() < 179000) {
+        kouki_power_tick(1000);
+    }
+    CHECK(kouki_power_get_brightness() == 20, "brightness 20 before 180 s");
+
+    // Порог 180 с: затухание в 0%.
+    for (int i = 0; i < 6; i++) {
+        kouki_power_tick(1000);
+    }
+    CHECK(kouki_power_get_idle_ms() >= 185000, "idle >= 185000");
+    CHECK(kouki_power_get_brightness() == 0, "brightness 0 after 180 s");
+
+    // Насыщение idle — защита от переполнения uint32.
+    for (int i = 0; i < 50; i++) {
+        kouki_power_tick(1000);
+    }
+    CHECK(kouki_power_get_idle_ms() <= 186000, "idle saturates");
+    CHECK(kouki_power_get_brightness() == 0, "brightness stays 0 while idle");
+
+    // Активность: idle = 0, яркость мгновенно 100%.
+    kouki_power_notify_activity();
+    CHECK(kouki_power_get_idle_ms() == 0, "activity resets idle");
+    CHECK(kouki_power_get_brightness() == 100, "activity restores 100");
+
+    // Большой dt_ms не переполняет яркость и не уходит ниже нуля.
+    kouki_power_init();
+    for (int i = 0; i < 200; i++) {
+        kouki_power_tick(1000);  // до 200 с, давно за порогом OFF
+    }
+    CHECK(kouki_power_get_brightness() == 0, "large total dt ends at 0");
+    kouki_power_notify_activity();
+    CHECK(kouki_power_get_brightness() == 100, "activity after long idle restores 100");
+}
+
 int main() {
     test_time();
     test_history();
+    test_power();
 
     std::printf("========================================\n");
     std::printf("ИТОГО: %d/%d проверок успешно пройдено!\n", g_passed, g_checks);
