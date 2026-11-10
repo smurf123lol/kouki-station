@@ -268,4 +268,30 @@ run "audio build (volume 0)" "$CXX" -std=c++17 -Wall -Wextra -pthread \
     -o "$OBJ_DIR/test_audio_quiet_bin"
 run "audio run (volume 0)" "$OBJ_DIR/test_audio_quiet_bin"
 
+echo "=== t121: Ota (kouki::Ota + C-фасад, мок esp_ota/esp_https_ota) ==="
+OTA="$SUPPORT/ota"
+# Разделы и HTTPS-OTA замоканы (support/ota), HTTP-клиент проверки обновлений
+# и группа событий — общие моки http_mock/wifi: стенд линкует настоящий
+# app_wifi.cpp ради kouki::wifi() в конструкторе Ota. sha256 считается
+# по-настоящему (sha256_mock.c), поэтому сверка образа проверяется как в образе.
+run "ota mock" "$CC" -std=gnu11 -Wall -Wextra -I"$OTA" -I"$HTTP_MOCK" -I"$WIFI" -I"$SUPPORT" -I"$CFG_MOCK" \
+    -c "$OTA/ota_mock.c" -o "$OBJ_DIR/ota_mock.o"
+run "ota sha256" "$CC" -std=gnu11 -Wall -Wextra -I"$OTA" -I"$SUPPORT" \
+    -c "$OTA/sha256_mock.c" -o "$OBJ_DIR/sha256_mock.o"
+run "ota stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$OTA" -I"$SUPPORT" -I"$MAIN" \
+    -c "$OTA/ota_stubs.c" -o "$OBJ_DIR/ota_stubs.o"
+run "ota build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$OTA" -I"$HTTP_MOCK" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" \
+    -I"$MAIN" -I"$CJSON_DIR" \
+    "$TEST/test_ota.cpp" \
+    "$MAIN/app_ota.cpp" "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" \
+    "$MAIN/app_http.cpp" "$MAIN/app_time.cpp" \
+    "$OBJ_DIR/ota_mock.o" "$OBJ_DIR/sha256_mock.o" "$OBJ_DIR/ota_stubs.o" \
+    "$OBJ_DIR/http_mock.o" "$OBJ_DIR/wifi_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    "$OBJ_DIR/cJSON.o" \
+    -lm \
+    -o "$OBJ_DIR/test_ota_bin"
+run "ota run" "$OBJ_DIR/test_ota_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="

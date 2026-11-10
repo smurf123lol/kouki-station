@@ -53,6 +53,9 @@ typedef struct {
     esp_err_t (*crt_bundle_attach)(void *conf);
     http_event_handle_cb event_handler;
     void *user_data;
+    /* Ниже — поля, которыми пользуется модуль OTA (T121 П8). */
+    bool keep_alive_enable;
+    bool skip_cert_common_name_check;
 } esp_http_client_config_t;
 
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config);
@@ -60,6 +63,15 @@ esp_err_t esp_http_client_get_and_clear_last_tls_error(esp_http_client_handle_t 
                                                        int *esp_tls_error_code,
                                                        int *esp_tls_flags);
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client);
+
+/* --- Поверхность модуля OTA (T121 П8): GET /api/firmware -------------- */
+
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t client, const char *key, const char *value);
+esp_err_t esp_http_client_open(esp_http_client_handle_t client, int write_len);
+int esp_http_client_fetch_headers(esp_http_client_handle_t client);
+int esp_http_client_get_status_code(esp_http_client_handle_t client);
+int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len);
+esp_err_t esp_http_client_close(esp_http_client_handle_t client);
 
 /* --- Управление моком из стенда --------------------------------------- */
 
@@ -83,6 +95,24 @@ int http_mock_tls_error_calls(void);
 
 /** Вызвать сохранённый event_handler с событием ON_CONNECTED (как это делает IDF). */
 void http_mock_fire_connected(void);
+
+/* --- Управление GET-ответом (модуль OTA, T121 П8) --------------------- */
+
+/** Заказать статус и тело ответа на GET /api/firmware. */
+void http_mock_set_response(int status_code, const char *body);
+
+/** Заказать ошибку следующего esp_http_client_open (ESP_OK — успех). */
+void http_mock_fail_open(esp_err_t err);
+
+/** Значение заголовка, который выставил код (NULL — заголовок не ставили). */
+const char *http_mock_header(const char *key);
+
+/** Сколько раз читали тело ответа. */
+int http_mock_read_calls(void);
+
+/** Счётчики открытия/закрытия: стенд видит, что клиент закрыли после ответа. */
+int http_mock_open_calls(void);
+int http_mock_close_calls(void);
 
 #ifdef __cplusplus
 }

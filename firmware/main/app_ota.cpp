@@ -1,50 +1,104 @@
-#include "app_ota.h"
+#include "app_ota.hpp"
 
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
+#include <strings.h>
 
-#include "app_config.h"
+#include "app_config.hpp"
+#include "app_http.hpp"
 #include "app_speech.h"
 #include "app_ui.h"
 #include "app_voice.h"
+#include "app_wifi.hpp"
 #include "cJSON.h"
 #include "esp_app_desc.h"
-#include "esp_err.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "mbedtls/sha256.h"
 
-static const char *TAG = "kouki.ota";
+namespace kouki {
 
-#define MAX_OTA_SLOT_SIZE (0x400000) /* 4 МБ */
+namespace {
 
-static bool s_pending_verify = false;
-static TickType_t s_verify_start_tick = 0;
-static bool s_verify_timeout_logged = false;
-static volatile bool s_is_updating = false;
-static TaskHandle_t s_ota_task_handle = NULL;
-static EventGroupHandle_t s_ota_event_group = NULL;
-#define OTA_START_BIT     BIT0
-#define OTA_CHECK_NOW_BIT BIT1
+const char *const TAG = "kouki.ota";
 
-/* Контекст для вычисления sha256 и отслеживания загрузки */
-typedef struct {
+/* Предел размера образа под единственный app-слот (4 МБ). */
+constexpr size_t kMaxOtaSlotSize = 0x400000;
+
+/* Биты группы событий: прежние OTA_START_BIT / OTA_CHECK_NOW_BIT. */
+constexpr EventBits_t kStartBit = BIT0;
+constexpr EventBits_t kCheckNowBit = BIT1;
+
+/* Сколько ждём связи с сервером после старта нового образа. */
+constexpr uint32_t kVerifyTimeoutMs = 60000;
+
+/* Пауза задачи после подъёма сети и перед перезагрузкой после установки. */
+constexpr uint32_t kStartPauseMs = 2000;
+constexpr uint32_t kRestartPauseMs = 2000;
+
+/* Шаг ожидания в цикле задачи: раз в секунду проверяем события и таймаут. */
+constexpr uint32_t kWaitStepMs = 1000;
+
+/* Контекст для вычисления sha256 и отслеживания загрузки: живёт на стеке
+ * update(), поэтому членом класса не является. */
+struct DownloadCtx {
     mbedtls_sha256_context sha_ctx;
     size_t bytes_downloaded;
-} ota_download_ctx_t;
+};
 
-int kouki_ota_semver_compare(const char *v1, const char *v2)
+/**
+ * Колбэк esp_http_client на событие получения данных: копит sha256 и счётчик
+ * байт. Экземпляра класса здесь не нужно — состояние приходит в user_data,
+ * поэтому это обычная статическая функция, а не trampoline.
+ */
+esp_err_t on_http_event(esp_http_client_event_t *evt)
 {
-    if (v1 == NULL && v2 == NULL) return 0;
-    if (v1 == NULL) return -1;
-    if (v2 == NULL) return 1;
+    auto *ctx = static_cast<DownloadCtx *>(evt->user_data);
+    if (ctx == nullptr) {
+        return ESP_OK;
+    }
+
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        if (evt->data_len > 0) {
+            mbedtls_sha256_update(&ctx->sha_ctx, static_cast<const unsigned char *>(evt->data),
+                                  static_cast<size_t>(evt->data_len));
+            ctx->bytes_downloaded += static_cast<size_t>(evt->data_len);
+        }
+    }
+    return ESP_OK;
+}
+
+}  // namespace
+
+Ota::Ota(Config &config, Wifi &wifi, Http &http)
+    : m_config(config),
+      m_wifi(wifi),
+      m_http(http),
+      m_pending_verify(false),
+      m_verify_start_tick(0),
+      m_verify_timeout_logged(false),
+      m_is_updating(false),
+      m_task(nullptr),
+      m_events(nullptr)
+{
+    // m_wifi и m_http приходят по спеке §2 как зависимости модуля и держатся
+    // на случай, если проверку обновлений переведут на kouki::Http. Сейчас
+    // OTA-путь зовёт esp_http_client/esp_https_ota напрямую: порядок вызовов и
+    // тексты логов сверяются с master построчно, а kouki::Http добавляет свою
+    // обработку (pinned CA, запрет http://) — это изменило бы поведение.
+}
+
+int Ota::semver_compare(const char *v1, const char *v2)
+{
+    if (v1 == nullptr && v2 == nullptr) return 0;
+    if (v1 == nullptr) return -1;
+    if (v2 == nullptr) return 1;
 
     while (*v1 == ' ' || *v1 == 'v' || *v1 == 'V') v1++;
     while (*v2 == ' ' || *v2 == 'v' || *v2 == 'V') v2++;
@@ -52,35 +106,32 @@ int kouki_ota_semver_compare(const char *v1, const char *v2)
     int maj1 = 0, min1 = 0, pat1 = 0;
     int maj2 = 0, min2 = 0, pat2 = 0;
 
-    const char *pre1 = NULL;
-    const char *pre2 = NULL;
-
     sscanf(v1, "%d.%d.%d", &maj1, &min1, &pat1);
     sscanf(v2, "%d.%d.%d", &maj2, &min2, &pat2);
 
-    pre1 = strchr(v1, '-');
-    if (pre1 != NULL) pre1++;
+    const char *pre1 = strchr(v1, '-');
+    if (pre1 != nullptr) pre1++;
 
-    pre2 = strchr(v2, '-');
-    if (pre2 != NULL) pre2++;
+    const char *pre2 = strchr(v2, '-');
+    if (pre2 != nullptr) pre2++;
 
     if (maj1 != maj2) return (maj1 > maj2) ? 1 : -1;
     if (min1 != min2) return (min1 > min2) ? 1 : -1;
     if (pat1 != pat2) return (pat1 > pat2) ? 1 : -1;
 
     /* При равенстве major, minor, patch: версия без суффикса новее, чем с пре-релизом (1.0.0 > 1.0.0-rc) */
-    if (pre1 == NULL && pre2 != NULL) return 1;
-    if (pre1 != NULL && pre2 == NULL) return -1;
-    if (pre1 != NULL && pre2 != NULL) return strcmp(pre1, pre2);
+    if (pre1 == nullptr && pre2 != nullptr) return 1;
+    if (pre1 != nullptr && pre2 == nullptr) return -1;
+    if (pre1 != nullptr && pre2 != nullptr) return strcmp(pre1, pre2);
 
     return 0;
 }
 
-void kouki_ota_mark_server_communicated(void)
+void Ota::mark_server_communicated()
 {
-    if (s_pending_verify) {
-        s_pending_verify = false;
-        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (m_pending_verify) {
+        m_pending_verify = false;
+        const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "связь с сервером подтверждена: образ валиден, откат отменён");
         } else {
@@ -89,15 +140,15 @@ void kouki_ota_mark_server_communicated(void)
     }
 }
 
-bool kouki_ota_is_updating(void)
+bool Ota::is_updating() const
 {
-    return s_is_updating;
+    return m_is_updating.load(std::memory_order_acquire);
 }
 
-static esp_err_t _ota_http_client_init_cb(esp_http_client_handle_t client)
+esp_err_t Ota::on_http_client_init(esp_http_client_handle_t client)
 {
-    const char *token = kouki_config_get_srv_token();
-    if (token != NULL && token[0] != '\0') {
+    const char *token = m_config.srv_token();
+    if (token != nullptr && token[0] != '\0') {
         char auth_hdr[300];
         snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", token);
         return esp_http_client_set_header(client, "Authorization", auth_hdr);
@@ -105,26 +156,15 @@ static esp_err_t _ota_http_client_init_cb(esp_http_client_handle_t client)
     return ESP_OK;
 }
 
-static esp_err_t _ota_http_event_handler(esp_http_client_event_t *evt)
+esp_err_t Ota::http_client_init_trampoline(esp_http_client_handle_t client)
 {
-    ota_download_ctx_t *ctx = (ota_download_ctx_t *)evt->user_data;
-    if (ctx == NULL) {
-        return ESP_OK;
-    }
-
-    if (evt->event_id == HTTP_EVENT_ON_DATA) {
-        if (evt->data_len > 0) {
-            mbedtls_sha256_update(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len);
-            ctx->bytes_downloaded += evt->data_len;
-        }
-    }
-    return ESP_OK;
+    // Экземпляр один (kouki::ota()), колбэк C-шный — зовём метод через него.
+    return ota().on_http_client_init(client);
 }
 
-/* Выполняет установку новой версии прошивки */
-static esp_err_t perform_ota_update(const char *image_url, const char *expected_sha256)
+esp_err_t Ota::update(const char *image_url, const char *expected_sha256)
 {
-    const char *srv_url = kouki_config_get_srv_url();
+    const char *srv_url = m_config.srv_url();
     char full_url[256];
     if (image_url[0] == '/') {
         snprintf(full_url, sizeof(full_url), "%s%s", srv_url, image_url);
@@ -148,41 +188,42 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    s_is_updating = true;
+    m_is_updating.store(true, std::memory_order_release);
     kouki_ui_show_ota_progress("Обновление прошивки…\nНе выключайте питание");
     ESP_LOGI(TAG, "начинаю загрузку прошивки из %s", full_url);
 
-    ota_download_ctx_t dctx;
+    DownloadCtx dctx;
     memset(&dctx, 0, sizeof(dctx));
     mbedtls_sha256_init(&dctx.sha_ctx);
     mbedtls_sha256_starts(&dctx.sha_ctx, 0); /* 0 для SHA256 */
 
-    esp_http_client_config_t http_cfg = {
-        .url = full_url,
-        .cert_pem = kouki_config_get_effective_ca_pem(),
-        .timeout_ms = 30000,
-        .keep_alive_enable = true,
-        .skip_cert_common_name_check = false,
-        .event_handler = _ota_http_event_handler,
-        .user_data = &dctx,
-    };
+    // Поля заполняем присваиванием, а не designated initializers: в C++
+    // порядок инициализаторов обязан совпадать с порядком полей структуры
+    // IDF, а в C — нет; присваивание ведёт себя одинаково в обоих языках.
+    esp_http_client_config_t http_cfg = {};
+    http_cfg.url = full_url;
+    http_cfg.cert_pem = m_config.effective_ca_pem();
+    http_cfg.timeout_ms = 30000;
+    http_cfg.keep_alive_enable = true;
+    http_cfg.skip_cert_common_name_check = false;
+    http_cfg.event_handler = on_http_event;
+    http_cfg.user_data = &dctx;
 
-    esp_https_ota_config_t ota_cfg = {
-        .http_config = &http_cfg,
-        .http_client_init_cb = _ota_http_client_init_cb,
-    };
+    esp_https_ota_config_t ota_cfg = {};
+    ota_cfg.http_config = &http_cfg;
+    ota_cfg.http_client_init_cb = http_client_init_trampoline;
 
-    esp_https_ota_handle_t ota_handle = NULL;
+    esp_https_ota_handle_t ota_handle = nullptr;
     esp_err_t err = esp_https_ota_begin(&ota_cfg, &ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_https_ota_begin failed: %s", esp_err_to_name(err));
         mbedtls_sha256_free(&dctx.sha_ctx);
-        s_is_updating = false;
+        m_is_updating.store(false, std::memory_order_release);
         kouki_ui_clear_ota();
         return err;
     }
 
-    while (1) {
+    while (true) {
         err = esp_https_ota_perform(ota_handle);
         if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
             break;
@@ -194,7 +235,7 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
         ESP_LOGE(TAG, "esp_https_ota_perform failed: %s", esp_err_to_name(err));
         esp_https_ota_abort(ota_handle);
         mbedtls_sha256_free(&dctx.sha_ctx);
-        s_is_updating = false;
+        m_is_updating.store(false, std::memory_order_release);
         kouki_ui_clear_ota();
         return err;
     }
@@ -203,7 +244,7 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
         ESP_LOGE(TAG, "образ получен не полностью");
         esp_https_ota_abort(ota_handle);
         mbedtls_sha256_free(&dctx.sha_ctx);
-        s_is_updating = false;
+        m_is_updating.store(false, std::memory_order_release);
         kouki_ui_clear_ota();
         return ESP_ERR_INVALID_SIZE;
     }
@@ -218,11 +259,11 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
     }
     sha_hex[64] = '\0';
 
-    if (expected_sha256 != NULL && expected_sha256[0] != '\0') {
+    if (expected_sha256 != nullptr && expected_sha256[0] != '\0') {
         if (strcasecmp(sha_hex, expected_sha256) != 0) {
             ESP_LOGE(TAG, "sha256 mismatch! ожидали: %s, получили: %s", expected_sha256, sha_hex);
             esp_https_ota_abort(ota_handle);
-            s_is_updating = false;
+            m_is_updating.store(false, std::memory_order_release);
             kouki_ui_clear_ota();
             return ESP_ERR_INVALID_CRC;
         }
@@ -233,23 +274,22 @@ static esp_err_t perform_ota_update(const char *image_url, const char *expected_
     err = esp_https_ota_finish(ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_https_ota_finish failed: %s", esp_err_to_name(err));
-        s_is_updating = false;
+        m_is_updating.store(false, std::memory_order_release);
         kouki_ui_clear_ota();
         return err;
     }
 
     ESP_LOGI(TAG, "обновление готово! Перезагрузка…");
     kouki_ui_show_ota_progress("Обновление готово.\nПерезагрузка…");
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(kRestartPauseMs));
     esp_restart();
     return ESP_OK;
 }
 
-/* Проверяет наличие обновлений на сервере */
-static void check_for_updates(void)
+void Ota::poll_once()
 {
-    const char *srv_url = kouki_config_get_srv_url();
-    const char *token = kouki_config_get_srv_token();
+    const char *srv_url = m_config.srv_url();
+    const char *token = m_config.srv_token();
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const char *current_ver = app_desc->version;
 
@@ -259,20 +299,19 @@ static void check_for_updates(void)
     ESP_LOGI(TAG, "проверка обновлений: %s (текущая версия %s)", check_url, current_ver);
 
     char auth_hdr[300] = {0};
-    if (token != NULL && token[0] != '\0') {
+    if (token != nullptr && token[0] != '\0') {
         snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", token);
     }
 
-    esp_http_client_config_t http_cfg = {
-        .url = check_url,
-        .cert_pem = kouki_config_get_effective_ca_pem(),
-        .timeout_ms = 10000,
-        .keep_alive_enable = false,
-        .skip_cert_common_name_check = false,
-    };
+    esp_http_client_config_t http_cfg = {};
+    http_cfg.url = check_url;
+    http_cfg.cert_pem = m_config.effective_ca_pem();
+    http_cfg.timeout_ms = 10000;
+    http_cfg.keep_alive_enable = false;
+    http_cfg.skip_cert_common_name_check = false;
 
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
-    if (client == NULL) {
+    if (client == nullptr) {
         ESP_LOGE(TAG, "не удалось создать http client для проверки обновлений");
         return;
     }
@@ -288,13 +327,13 @@ static void check_for_updates(void)
         return;
     }
 
-    int content_len = esp_http_client_fetch_headers(client);
+    const int content_len = esp_http_client_fetch_headers(client);
     (void)content_len;
-    int status_code = esp_http_client_get_status_code(client);
+    const int status_code = esp_http_client_get_status_code(client);
 
     /* Любой ответ сервера подтверждает успешное установление связи */
     if (status_code > 0) {
-        kouki_ota_mark_server_communicated();
+        mark_server_communicated();
     }
 
     if (status_code == 401) {
@@ -312,7 +351,7 @@ static void check_for_updates(void)
     }
 
     char body[1024];
-    int read_len = esp_http_client_read(client, body, sizeof(body) - 1);
+    const int read_len = esp_http_client_read(client, body, sizeof(body) - 1);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
@@ -323,7 +362,7 @@ static void check_for_updates(void)
     body[read_len] = '\0';
 
     cJSON *json = cJSON_Parse(body);
-    if (json == NULL) {
+    if (json == nullptr) {
         ESP_LOGW(TAG, "не удалось разобрать JSON от /api/firmware");
         return;
     }
@@ -334,7 +373,7 @@ static void check_for_updates(void)
     cJSON *item_url = cJSON_GetObjectItem(json, "url");
     cJSON *item_upd = cJSON_GetObjectItem(json, "update");
 
-    if (item_upd != NULL && cJSON_IsFalse(item_upd)) {
+    if (item_upd != nullptr && cJSON_IsFalse(item_upd)) {
         ESP_LOGI(TAG, "сервер сообщил update=false: образ не новее текущего");
         cJSON_Delete(json);
         return;
@@ -349,17 +388,17 @@ static void check_for_updates(void)
     const char *new_ver = item_ver->valuestring;
     const char *img_url = item_url->valuestring;
     const char *sha256_str = (item_sha && cJSON_IsString(item_sha)) ? item_sha->valuestring : "";
-    int img_size = (item_size && cJSON_IsNumber(item_size)) ? item_size->valueint : 0;
+    const int img_size = (item_size && cJSON_IsNumber(item_size)) ? item_size->valueint : 0;
 
-    int cmp = kouki_ota_semver_compare(new_ver, current_ver);
+    const int cmp = semver_compare(new_ver, current_ver);
     if (cmp <= 0) {
         ESP_LOGI(TAG, "версия на сервере (%s) не новее текущей (%s)", new_ver, current_ver);
         cJSON_Delete(json);
         return;
     }
 
-    if (img_size > MAX_OTA_SLOT_SIZE) {
-        ESP_LOGE(TAG, "образ больше слота: %d > %d байт, отмена", img_size, MAX_OTA_SLOT_SIZE);
+    if (static_cast<size_t>(img_size) > kMaxOtaSlotSize) {
+        ESP_LOGE(TAG, "образ больше слота: %d > %zu байт, отмена", img_size, kMaxOtaSlotSize);
         cJSON_Delete(json);
         return;
     }
@@ -374,54 +413,68 @@ static void check_for_updates(void)
     target_sha[sizeof(target_sha) - 1] = '\0';
     cJSON_Delete(json);
 
-    perform_ota_update(target_url, target_sha);
+    update(target_url, target_sha);
 }
 
-static void ota_task(void *arg)
+void Ota::poll_verify_timeout()
 {
-    (void)arg;
+    if (m_pending_verify && !m_verify_timeout_logged) {
+        if ((xTaskGetTickCount() - m_verify_start_tick) >= pdMS_TO_TICKS(kVerifyTimeoutMs)) {
+            m_verify_timeout_logged = true;
+            ESP_LOGW(TAG, "60 с прошло без связи с сервером: образ остаётся в PENDING_VERIFY (при сбое будет откат)");
+        }
+    }
+}
 
+void Ota::ota_task_trampoline(void *arg)
+{
+    // Указатель на экземпляр приходит из xTaskCreate, как в прежнем C-модуле
+    // приходил NULL: состояние теперь не файловое.
+    if (arg != nullptr) {
+        static_cast<Ota *>(arg)->run_task();
+    }
+    vTaskDelete(nullptr);
+}
+
+void Ota::run_task()
+{
     /* Ждем сигнала старта после подключения к сети */
-    xEventGroupWaitBits(s_ota_event_group, OTA_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    xEventGroupWaitBits(m_events, kStartBit, pdFALSE, pdTRUE, portMAX_DELAY);
 
     /* Небольшая пауза после подъема сети */
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(kStartPauseMs));
 
     while (true) {
-        check_for_updates();
+        poll_once();
 
-        uint32_t interval_s = kouki_config_get_ota_interval_s();
+        uint32_t interval_s = m_config.ota_interval_s();
         if (interval_s == 0) {
             interval_s = KOUKI_CONFIG_DEFAULT_OTA_INTERVAL;
         }
 
         /* Спим секундами, проверяя сигнал немедленной проверки и таймаут PENDING_VERIFY */
         for (uint32_t s = 0; s < interval_s; s++) {
-            EventBits_t b = xEventGroupWaitBits(s_ota_event_group, OTA_CHECK_NOW_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(1000));
-            if (b & OTA_CHECK_NOW_BIT) {
+            const EventBits_t b = xEventGroupWaitBits(m_events, kCheckNowBit, pdTRUE, pdFALSE,
+                                                      pdMS_TO_TICKS(kWaitStepMs));
+            if (b & kCheckNowBit) {
                 ESP_LOGI(TAG, "запрошена внеочередная проверка OTA");
                 break;
             }
 
-            if (s_pending_verify && !s_verify_timeout_logged) {
-                if ((xTaskGetTickCount() - s_verify_start_tick) >= pdMS_TO_TICKS(60000)) {
-                    s_verify_timeout_logged = true;
-                    ESP_LOGW(TAG, "60 с прошло без связи с сервером: образ остаётся в PENDING_VERIFY (при сбое будет откат)");
-                }
-            }
+            poll_verify_timeout();
         }
     }
 }
 
-esp_err_t kouki_ota_init(void)
+esp_err_t Ota::init()
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
-    if (running != NULL) {
+    if (running != nullptr) {
         esp_ota_img_states_t ota_state;
         if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
             if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-                s_pending_verify = true;
-                s_verify_start_tick = xTaskGetTickCount();
+                m_pending_verify = true;
+                m_verify_start_tick = xTaskGetTickCount();
                 ESP_LOGW(TAG, "образ запущен в PENDING_VERIFY на слоте '%s': ожидается подтверждение связи с сервером (таймаут 60 с)", running->label);
             } else {
                 ESP_LOGI(TAG, "текущий активный раздел: '%s', ota_state=%d", running->label, ota_state);
@@ -429,12 +482,12 @@ esp_err_t kouki_ota_init(void)
         }
     }
 
-    s_ota_event_group = xEventGroupCreate();
-    if (s_ota_event_group == NULL) {
+    m_events = xEventGroupCreate();
+    if (m_events == nullptr) {
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t ret = xTaskCreate(ota_task, "kouki.ota", 8192, NULL, 5, &s_ota_task_handle);
+    const BaseType_t ret = xTaskCreate(ota_task_trampoline, "kouki.ota", 8192, this, 5, &m_task);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "не удалось создать задачу OTA");
         return ESP_FAIL;
@@ -443,16 +496,59 @@ esp_err_t kouki_ota_init(void)
     return ESP_OK;
 }
 
+void Ota::start()
+{
+    if (m_events != nullptr) {
+        xEventGroupSetBits(m_events, kStartBit);
+    }
+}
+
+void Ota::check_now()
+{
+    if (m_events != nullptr) {
+        xEventGroupSetBits(m_events, kCheckNowBit);
+    }
+}
+
+Ota &ota()
+{
+    static Ota s_instance(config(), wifi(), http());
+    return s_instance;
+}
+
+}  // namespace kouki
+
+// Публичный C-API: тонкий фасад на единственный экземпляр.
+extern "C" {
+
+esp_err_t kouki_ota_init(void)
+{
+    return kouki::ota().init();
+}
+
 void kouki_ota_start(void)
 {
-    if (s_ota_event_group != NULL) {
-        xEventGroupSetBits(s_ota_event_group, OTA_START_BIT);
-    }
+    kouki::ota().start();
 }
 
 void kouki_ota_check_now(void)
 {
-    if (s_ota_event_group != NULL) {
-        xEventGroupSetBits(s_ota_event_group, OTA_CHECK_NOW_BIT);
-    }
+    kouki::ota().check_now();
 }
+
+void kouki_ota_mark_server_communicated(void)
+{
+    kouki::ota().mark_server_communicated();
+}
+
+bool kouki_ota_is_updating(void)
+{
+    return kouki::ota().is_updating();
+}
+
+int kouki_ota_semver_compare(const char *v1, const char *v2)
+{
+    return kouki::Ota::semver_compare(v1, v2);
+}
+
+}  // extern "C"
