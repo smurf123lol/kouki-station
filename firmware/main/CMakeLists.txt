@@ -4,7 +4,7 @@ idf_component_register(
         "./app_config.cpp"
         "./app_setup.c"
         "./app_wifi.c"
-        "./app_http.c"
+        "./app_http.cpp"
         "./app_voice.cpp"
         "./app_vad.c"
         "./fsm/voice_state_manager.cpp"

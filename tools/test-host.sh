@@ -189,4 +189,33 @@ run "modules build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_modules_bin"
 run "modules run" "$OBJ_DIR/test_modules_bin"
 
+echo "=== t121: Http (kouki::Http + C-фасад, мок esp_http_client) ==="
+HTTP_MOCK="$SUPPORT/http_mock"
+# Стенд линкует настоящий app_config.cpp (нужен kouki::config() для pinned CA),
+# поэтому моки NVS/mbedtls берём из config_mock, а esp_http_client — из http_mock.
+# Собирается дважды: CONFIG_KOUKI_ALLOW_HTTP=1 (sim) и =0 (дефолт Kconfig).
+run "http mock" "$CC" -std=gnu11 -Wall -Wextra -I"$HTTP_MOCK" -I"$CFG_MOCK" \
+    -c "$HTTP_MOCK/http_mock.c" -o "$OBJ_DIR/http_mock.o"
+run "http build (allow)" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    -DHTTP_EXPECT_ALLOW_HTTP=1 \
+    "$TEST/test_http.cpp" \
+    "$MAIN/app_http.cpp" \
+    "$MAIN/app_config.cpp" \
+    "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -o "$OBJ_DIR/test_http_bin"
+run "http run (allow)" "$OBJ_DIR/test_http_bin"
+
+run "http build (deny)" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$HTTP_MOCK/deny" -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    -DHTTP_EXPECT_ALLOW_HTTP=0 \
+    "$TEST/test_http.cpp" \
+    "$MAIN/app_http.cpp" \
+    "$MAIN/app_config.cpp" \
+    "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -o "$OBJ_DIR/test_http_deny_bin"
+run "http run (deny)" "$OBJ_DIR/test_http_deny_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="

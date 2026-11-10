@@ -1,21 +1,25 @@
-#include "app_http.h"
+#include "app_http.hpp"
 
 #include <netdb.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/socket.h>
 
-#include "app_config.h"
+#include <cstdio>
+#include <cstring>
+
+#include "app_config.hpp"
 #include "esp_log.h"
 #include "esp_tls_errors.h"
 
-static const char *TAG = "kouki.http";
+namespace kouki {
+namespace {
+
+const char *const TAG = "kouki.http";
 
 #ifndef CONFIG_KOUKI_TLS_TIMEOUT_S
 #define CONFIG_KOUKI_TLS_TIMEOUT_S 10
 #endif
 
-static void extract_host(const char *url, char *host, size_t max_host)
+void extract_host(const char *url, char *host, size_t max_host)
 {
     host[0] = '\0';
     if (!url) {
@@ -34,23 +38,30 @@ static void extract_host(const char *url, char *host, size_t max_host)
     host[i] = '\0';
 }
 
-void kouki_http_on_connected(const char *url)
+// C-колбэк esp_http_client остаётся статической trampoline-функцией: экземпляр
+// у модуля один (kouki::http()), поэтому зовём его метод напрямую.
+esp_err_t default_http_event(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_CONNECTED) {
+        /* При успешном соединении по https TLS handshake завершён и сертификат проверен */
+        http().on_connected("https://");
+    }
+    return ESP_OK;
+}
+
+}  // namespace
+
+Http::Http(Config &config) : m_config(config) {}
+
+void Http::on_connected(const char *url)
 {
     if (url != NULL && strncmp(url, "https://", 8) == 0) {
         ESP_LOGI(TAG, "https: server cert chain ok");
     }
 }
 
-static esp_err_t default_http_event(esp_http_client_event_t *evt)
-{
-    if (evt->event_id == HTTP_EVENT_ON_CONNECTED) {
-        /* При успешном соединении по https TLS handshake завершён и сертификат проверен */
-        kouki_http_on_connected("https://");
-    }
-    return ESP_OK;
-}
-
-esp_err_t kouki_http_new_client(const esp_http_client_config_t *base_cfg, esp_http_client_handle_t *out_client)
+esp_err_t Http::new_client(const esp_http_client_config_t *base_cfg,
+                           esp_http_client_handle_t *out_client)
 {
     if (base_cfg == NULL || out_client == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -70,7 +81,7 @@ esp_err_t kouki_http_new_client(const esp_http_client_config_t *base_cfg, esp_ht
     }
 
     if (cfg.url && strncmp(cfg.url, "https://", 8) == 0) {
-        cfg.cert_pem = kouki_config_get_effective_ca_pem();
+        cfg.cert_pem = m_config.effective_ca_pem();
     }
 
     if (cfg.event_handler == NULL) {
@@ -86,7 +97,8 @@ esp_err_t kouki_http_new_client(const esp_http_client_config_t *base_cfg, esp_ht
     return ESP_OK;
 }
 
-void kouki_http_diagnose_error(esp_http_client_handle_t client, const char *url, esp_err_t req_err, char *err_buf, size_t max_len)
+void Http::diagnose_error(esp_http_client_handle_t client, const char *url, esp_err_t req_err,
+                          char *err_buf, size_t max_len)
 {
     if (err_buf == NULL || max_len == 0) {
         return;
@@ -112,7 +124,10 @@ void kouki_http_diagnose_error(esp_http_client_handle_t client, const char *url,
     /* 2. Сбой резолва DNS */
     bool dns_failed = (req_err == ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME);
     if (!dns_failed && host[0] != '\0') {
-        struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
         struct addrinfo *res = NULL;
         int ret = getaddrinfo(host, NULL, &hints, &res);
         if (res) {
@@ -133,3 +148,33 @@ void kouki_http_diagnose_error(esp_http_client_handle_t client, const char *url,
     ESP_LOGW(TAG, "ошибка связи: err=%s (0x%x)", esp_err_to_name(req_err), (unsigned)req_err);
     snprintf(err_buf, max_len, "Нет связи с сервером.");
 }
+
+Http &http()
+{
+    static Http s_instance(config());
+    return s_instance;
+}
+
+}  // namespace kouki
+
+// Публичный C-API: тонкий фасад на единственный экземпляр.
+extern "C" {
+
+esp_err_t kouki_http_new_client(const esp_http_client_config_t *base_cfg,
+                                esp_http_client_handle_t *out_client)
+{
+    return kouki::http().new_client(base_cfg, out_client);
+}
+
+void kouki_http_on_connected(const char *url)
+{
+    kouki::http().on_connected(url);
+}
+
+void kouki_http_diagnose_error(esp_http_client_handle_t client, const char *url, esp_err_t req_err,
+                               char *err_buf, size_t max_len)
+{
+    kouki::http().diagnose_error(client, url, req_err, err_buf, max_len);
+}
+
+}  // extern "C"
