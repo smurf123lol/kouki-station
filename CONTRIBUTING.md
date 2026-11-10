@@ -5,24 +5,25 @@
 
 ## Что нужно на машине
 
-- ESP-IDF **v5.5.1** (клон + `install.bat esp32s3`), `python` 3.12, `git`.
-- Плата по USB (USB-Serial-JTAG или UART-мост), порт вида `COM3`.
+- Сервер разработки (`/srv/kouki-workspace`): ESP-IDF v5.5.1 в `_scratch/esp-idf`,
+  тулчейн в `_scratch/esp-tools`, `git`, плата по USB (видна как `/dev/ttyACM0`).
+- Либо Windows-машина с ESP-IDF v5.5.1, `python` 3.12, `git` и платой на `COM3`
+  (вспомогательный путь, см. `docs/build.md`, «Вариант 2»).
 - Свободные ~3 ГБ на диске: тулчейн + собранный образ.
 
-Инструменты репозитория берут IDF из `-IdfPath` или из переменной окружения и сами
-выставляют `TEMP`, `CCACHE_DIR`, `IDF_COMPONENT_CACHE_PATH` внутрь рабочей папки — без этого
-сборка падает на правах доступа (см. `docs/build.md`).
+## Цикл разработки (канон — сервер)
 
-## Цикл разработки
-
-```powershell
-. .\tools\env-idf.ps1                              # once per shell
-.\tools\build-native.ps1 -Secret                    # сборка с Wi-Fi/токеном
-.\tools\flash-windows.ps1 -Port COM3                # прошивка
+```bash
+# из каталога kouki-station
+tools/build-linux.sh --secret --build-dir _scratch/build-master   # сборка
+BUILD_DIR=_scratch/build-master tools/flash-linux.sh -p /dev/ttyACM0   # прошивка
 ```
 
-Смотреть лог платы удобно внешним монитором на 115200 либо `tools/serial.ps1` — прошивка
-сама печатает состояние: версию прошивки, IP, режим (кнопка/кодовое слово), итог каждого
+На Windows те же шаги: `. .\tools\env-idf.ps1` (один раз на shell), затем
+`.\tools\build-native.ps1 -Secret` и `.\tools\flash-windows.ps1 -Port COM3`.
+
+Смотреть лог платы: `tools/flash-linux.sh --monitor` (или `idf.py monitor`), на сервере ещё
+`_scratch/read-serial.py` — прошивка сама печатает состояние: версию прошивки, IP, режим (кнопка/кодовое слово), итог каждого
 запроса (`отправка: err=…, HTTP …, услышали: …`).
 
 ## Проверка без микрофона
@@ -31,7 +32,7 @@
    сама пишет и отправляет. Удобно ловить «сервер не отвечает», «порог слишком высокий».
 2. **Сервер с распознаванием** должен быть собран с `-p:KoukiEnableSherpa=true`, иначе
    `/api/voice` отвечает `503`, и станция покажет «Не вышло» — это не поломка станции.
-3. **Синтез речи** на серверной машине: `tools\Kouki.SpeechLab` (`say` / `hear` / `roundtrip`)
+3. **Синтез речи** на серверной машине: `Kouki/tools/Kouki.SpeechLab` (`say` / `hear` / `roundtrip`, сборка с `-p:KoukiEnableSherpa=true`)
    — проверяет распознавание и весь HTTP-путь без человека.
 
 ## Что считается готовым

@@ -47,25 +47,25 @@
 
 ## Сборка, прошивка, проверка
 
-```powershell
-# окружение IDF (идемпотентно; при необходимости -IdfPath)
-. .\tools\env-idf.ps1
+Канон — сервер, Linux-скрипты (см. `docs/build.md`, «Вариант 1»):
 
-# сборка с секретами (sdkconfig.secret подхватывается автоматически)
-.\tools\build-native.ps1 -Secret
+```bash
+# сборка с секретами (sdkconfig.secret подхватывается автоматически;
+# sdkconfig живёт в каталоге сборки, а не в firmware/)
+tools/build-linux.sh --secret --build-dir _scratch/build-master
 
 # прошивка: пишет bootloader / таблицу разделов / приложение / srmodels (если он есть)
-.\tools\flash-windows.ps1 -Port COM3
+BUILD_DIR=_scratch/build-master tools/flash-linux.sh -p /dev/ttyACM0
 ```
 
-На Linux-сервере те же шаги делают `tools/build-linux.sh --secret` и `tools/flash-linux.sh`
-(плата видна как `/dev/ttyACM0`, группа `dialout` поднимается скриптом; `sdkconfig` живёт
-в каталоге сборки — см. `docs/build.md`, «Вариант 3»).
+На Windows те же шаги делают `tools/build-native.ps1 -Secret` и
+`tools/flash-windows.ps1 -Port COM3` — это вспомогательный путь (`docs/build.md`,
+«Вариант 2»), не канон.
 
 - `TEMP`/`TMP`/`CCACHE_DIR`/`IDF_COMPONENT_CACHE_PATH` должны указывать в каталог внутри
   рабочей папки: в чужих каталогах сборка падает на правах (подробности — `docs/build.md`).
-- Путь с пробелом ломает Xtensa (`XTENSA_GNU_CONFIG` + `-dynconfig`) — поэтому в окружении
-  используются junction-пути без пробелов.
+  На Linux это `_scratch`, на Windows — пути без пробелов (путь с пробелом ломает Xtensa:
+  `XTENSA_GNU_CONFIG` + `-dynconfig`).
 - `srmodels.bin` прошивается только если он больше 1 КБ: пустая заглушка упаковщика означает
   «wake выключен».
 - **Сборка по умолчанию не содержит секретов** — на чистой машине это нормально, но образ
@@ -84,7 +84,7 @@
 - Временные файлы — только вне репозитория (в воркспейсе это `_scratch`).
 - `firmware/dependencies.lock` держим в репозитории и не игнорируем: без него версии
   `lvgl`/`esp-sr` «уплывают» между сборками (сейчас в `.gitignore` он лишний — известная
-  проблема, см. `notes-updated\Ревью\Ревью кода.md`).
+  проблема, см. `notes-updated/Ревью/Ревью кода.md`).
 
 ## Что обновлять вместе с прошивкой
 
@@ -92,7 +92,7 @@
 2. `docs/protocol.md` — если меняется запрос/ответ сервера.
 3. `docs/build.md` — если поменялся способ сборки или нашлась новая грабля.
 4. `docs/decisions.md` — ADR: что решили, какую цену заплатили.
-5. Заметки воркспейса: `notes-updated\Станция\Станция Kouki.md`, статус в `notes-updated\Задачи Kouki.md`.
+5. Заметки воркспейса: `notes-updated/Станция/Станция Kouki.md`, статус в `notes-updated/Задачи Kouki.md`.
 
 ## Чего делать нельзя
 
