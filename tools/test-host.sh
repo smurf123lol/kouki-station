@@ -196,6 +196,23 @@ run "vad build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_vad_bin"
 run "vad run" "$OBJ_DIR/test_vad_bin"
 
+echo "=== t121: Wifi (kouki::Wifi + C-фасад, мок esp_wifi/esp_netif/esp_event) ==="
+# Сеть не поднимается: мок запоминает вызовы и сам доставляет события
+# (STA_START, GOT_IP), поэтому стенд видит настоящую логику backoff.
+WIFI="$SUPPORT/wifi"
+run "wifi mock" "$CC" -std=gnu11 -Wall -Wextra -I"$WIFI" -I"$SUPPORT" \
+    -c "$WIFI/wifi_mock.c" -o "$OBJ_DIR/wifi_mock.o"
+# app_config.cpp тоже участвует: SSID/пароль Wi-Fi берёт из kouki::config().
+run "wifi build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    "$TEST/test_wifi.cpp" \
+    "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" "$MAIN/app_time.cpp" \
+    "$OBJ_DIR/wifi_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -lm \
+    -o "$OBJ_DIR/test_wifi_bin"
+run "wifi run" "$OBJ_DIR/test_wifi_bin"
+
 echo "=== t121: Http (kouki::Http + C-фасад, мок esp_http_client) ==="
 HTTP_MOCK="$SUPPORT/http_mock"
 # Стенд линкует настоящий app_config.cpp (нужен kouki::config() для pinned CA),

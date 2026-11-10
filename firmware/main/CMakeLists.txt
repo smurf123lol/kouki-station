@@ -3,7 +3,7 @@ idf_component_register(
         "./main.c"
         "./app_config.cpp"
         "./app_setup.c"
-        "./app_wifi.c"
+        "./app_wifi.cpp"
         "./app_http.cpp"
         "./app_voice.cpp"
         "./app_vad.cpp"
