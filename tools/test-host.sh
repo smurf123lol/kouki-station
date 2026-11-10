@@ -110,7 +110,6 @@ run() {
 }
 
 echo "=== Компиляция C-модулей (-Wall -Wextra) ==="
-run "app_audio_out.c" "$CC" -std=gnu11 -Wall -Wextra -I"$SUPPORT" -I"$MAIN" -c "$MAIN/app_audio_out.c" -o "$OBJ_DIR/app_audio_out.o"
 run "app_vad.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.c" -o "$OBJ_DIR/app_vad.o"
 run "cJSON.c" "$CC" -std=gnu11 -O2 -I"$CJSON_DIR" -c "$CJSON_DIR/cJSON.c" -o "$OBJ_DIR/cJSON.o"
 
@@ -217,5 +216,31 @@ run "http build (deny)" "$CXX" -std=c++17 -Wall -Wextra \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -o "$OBJ_DIR/test_http_deny_bin"
 run "http run (deny)" "$OBJ_DIR/test_http_deny_bin"
+
+echo "=== t121: AudioOut + Tone (kouki::AudioOut/Tone + C-фасад, мок кодека) ==="
+AUDIO="$SUPPORT/audio"
+# Кодек заменён моком esp_audio_play: стенд видит настоящую очередь, worker и
+# порядок воспроизведения. Собирается дважды: громкость сигналов 50 (обычный
+# случай) и 0 (каталог quiet/) — во втором Tone обязан молчать.
+run "audio mock" "$CC" -std=gnu11 -Wall -Wextra -I"$AUDIO" -I"$SUPPORT" -I"$MAIN" \
+    -c "$AUDIO/audio_mock.c" -o "$OBJ_DIR/audio_mock.o"
+run "audio build" "$CXX" -std=c++17 -Wall -Wextra -pthread \
+    -I"$AUDIO" -I"$SUPPORT" -I"$MAIN" \
+    "$TEST/test_audio_out.cpp" \
+    "$MAIN/app_audio_out.cpp" "$MAIN/app_tone.cpp" \
+    "$OBJ_DIR/audio_mock.o" \
+    -lm -pthread \
+    -o "$OBJ_DIR/test_audio_bin"
+run "audio run" "$OBJ_DIR/test_audio_bin"
+
+run "audio build (volume 0)" "$CXX" -std=c++17 -Wall -Wextra -pthread \
+    -I"$AUDIO/quiet" -I"$AUDIO" -I"$SUPPORT" -I"$MAIN" \
+    -DTONE_EXPECT_VOLUME_0=1 \
+    "$TEST/test_audio_out.cpp" \
+    "$MAIN/app_audio_out.cpp" "$MAIN/app_tone.cpp" \
+    "$OBJ_DIR/audio_mock.o" \
+    -lm -pthread \
+    -o "$OBJ_DIR/test_audio_quiet_bin"
+run "audio run (volume 0)" "$OBJ_DIR/test_audio_quiet_bin"
 
 echo "=== ALL HOSTCHECKS PASSED ==="
