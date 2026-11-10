@@ -9,6 +9,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -23,6 +24,21 @@ static EventGroupHandle_t s_events;
 static atomic_bool s_connected = ATOMIC_VAR_INIT(false);
 static atomic_uint_fast32_t s_state_seq = ATOMIC_VAR_INIT(0);
 
+/* Повторы с растущей паузой: при выключенном роутере плата не крутит цикл
+ * подключений, а ждёт 1, 2, 4, 8, 16 секунд (дальше — каждые 16). Счётчик
+ * сбрасывается, когда адрес получен. Пауза — одноразовый таймер, а не
+ * vTaskDelay: обработчик события должен оставаться быстрым. */
+static const uint32_t RETRY_MAX_MS = 16000;
+static uint32_t s_retry_delay_ms = 1000;
+static uint32_t s_retry_count;
+static esp_timer_handle_t s_retry_timer;
+
+static void on_retry_timer(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -33,8 +49,17 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         atomic_store_explicit(&s_connected, false, memory_order_release);
         atomic_fetch_add_explicit(&s_state_seq, 1, memory_order_release);
-        ESP_LOGW(TAG, "соединение потеряно, пробуем снова");
-        esp_wifi_connect();
+        s_retry_count++;
+        uint32_t delay_ms = s_retry_delay_ms;
+        s_retry_delay_ms = delay_ms >= RETRY_MAX_MS ? RETRY_MAX_MS : delay_ms * 2;
+        ESP_LOGW(TAG, "соединение потеряно (попытка %u), повтор через %u мс",
+                 (unsigned)s_retry_count, (unsigned)delay_ms);
+        if (s_retry_timer != NULL) {
+            esp_timer_stop(s_retry_timer);
+            esp_timer_start_once(s_retry_timer, (uint64_t)delay_ms * 1000);
+        } else {
+            esp_wifi_connect();
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "адрес получен: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -46,6 +71,11 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         kouki_time_init(NULL);
         atomic_store_explicit(&s_connected, true, memory_order_release);
         atomic_fetch_add_explicit(&s_state_seq, 1, memory_order_release);
+        s_retry_delay_ms = 1000;
+        s_retry_count = 0;
+        if (s_retry_timer != NULL) {
+            esp_timer_stop(s_retry_timer);
+        }
         xEventGroupSetBits(s_events, CONNECTED_BIT);
     }
 }
@@ -66,6 +96,16 @@ esp_err_t kouki_wifi_connect(void)
 
     const wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "esp_wifi_init");
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &on_retry_timer,
+        .name = "wifi-retry",
+    };
+    esp_err_t timer_err = esp_timer_create(&timer_args, &s_retry_timer);
+    if (timer_err != ESP_OK) {
+        ESP_LOGW(TAG, "таймер повторов не создан: %s (повторы без паузы)", esp_err_to_name(timer_err));
+        s_retry_timer = NULL;
+    }
 
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &on_wifi_event, NULL, NULL),
                         TAG, "регистрация WIFI_EVENT");
