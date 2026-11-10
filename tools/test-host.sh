@@ -110,10 +110,10 @@ run() {
 }
 
 echo "=== Компиляция C-модулей (-Wall -Wextra) ==="
-run "app_vad.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.c" -o "$OBJ_DIR/app_vad.o"
 run "cJSON.c" "$CC" -std=gnu11 -O2 -I"$CJSON_DIR" -c "$CJSON_DIR/cJSON.c" -o "$OBJ_DIR/cJSON.o"
 
-echo "=== Компиляция C++-модулей П3 (-Wall -Wextra) ==="
+echo "=== Компиляция C++-модулей П3/П6 (-Wall -Wextra) ==="
+run "app_vad.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.cpp" -o "$OBJ_DIR/app_vad.o"
 run "app_time.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_time.cpp" -o "$OBJ_DIR/app_time.o"
 run "app_history.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.cpp" -o "$OBJ_DIR/app_history.o"
 run "app_power.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_power.cpp" -o "$OBJ_DIR/app_power.o"
@@ -187,6 +187,14 @@ run "modules build" "$CXX" -std=c++17 -Wall -Wextra \
     -lm \
     -o "$OBJ_DIR/test_modules_bin"
 run "modules run" "$OBJ_DIR/test_modules_bin"
+
+echo "=== t121: Vad (kouki::Vad + C-фасад, фреймы 30 мс) ==="
+run "vad build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$MAIN" \
+    "$TEST/test_vad.cpp" \
+    "$OBJ_DIR/app_vad.o" \
+    -o "$OBJ_DIR/test_vad_bin"
+run "vad run" "$OBJ_DIR/test_vad_bin"
 
 echo "=== t121: Http (kouki::Http + C-фасад, мок esp_http_client) ==="
 HTTP_MOCK="$SUPPORT/http_mock"
