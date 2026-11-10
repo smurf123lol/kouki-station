@@ -341,4 +341,21 @@ run "wake build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_wake_bin"
 run "wake run" "$OBJ_DIR/test_wake_bin"
 
+echo "=== t121: Setup (kouki::Setup, моки httpd/SoftAP/USB-Serial-JTAG) ==="
+SETUP="$SUPPORT/setup"
+run "setup mock" "$CC" -std=gnu11 -Wall -Wextra -I"$SETUP" -I"$WIFI" -I"$SUPPORT" \
+    -c "$SETUP/setup_mock.c" -o "$OBJ_DIR/setup_mock.o"
+run "setup stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$SETUP" -I"$WIFI" -I"$SUPPORT" -I"$MAIN" \
+    -c "$SETUP/setup_stubs.c" -o "$OBJ_DIR/setup_stubs.o"
+run "setup build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$SETUP" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    "$TEST/test_setup.cpp" \
+    "$MAIN/app_setup.cpp" "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" "$MAIN/app_time.cpp" \
+    "$OBJ_DIR/setup_mock.o" "$OBJ_DIR/setup_stubs.o" \
+    "$OBJ_DIR/wifi_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -lm \
+    -o "$OBJ_DIR/test_setup_bin"
+run "setup run" "$OBJ_DIR/test_setup_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="

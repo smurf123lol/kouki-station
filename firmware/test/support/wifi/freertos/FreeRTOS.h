@@ -15,4 +15,7 @@ typedef int BaseType_t;
 #define pdTRUE 1
 #define pdFALSE 0
 #define pdPASS 1
+#ifndef pdFAIL
+#define pdFAIL 0
+#endif
 #define pdMS_TO_TICKS(ms) ((TickType_t)(ms))

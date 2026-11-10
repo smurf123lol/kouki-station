@@ -1,34 +1,35 @@
-#include "app_setup.h"
+#include "app_setup.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-#include "app_config.h"
+#include "app_config.hpp"
 #include "app_history.h"
 #include "app_ui.h"
 #include "app_voice.h"
+#include "app_wifi.hpp"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_check.h"
-#include "esp_http_server.h"
-#include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/x509_crt.h"
-#include "sdkconfig.h"
 
-static const char *TAG = "kouki.setup";
+namespace kouki {
+namespace {
 
-static bool s_setup_active = false;
-static httpd_handle_t s_server = NULL;
+const char *const TAG = "kouki.setup";
 
-static void url_decode(char *dst, const char *src, size_t dst_max)
+// Предел строки консоли: одна команда целиком, включая длинный URL или PEM.
+constexpr size_t kConsoleLineMax = 512;
+
+void url_decode(char *dst, const char *src, size_t dst_max)
 {
     size_t d = 0;
     while (*src && d + 1 < dst_max) {
@@ -46,7 +47,7 @@ static void url_decode(char *dst, const char *src, size_t dst_max)
     dst[d] = '\0';
 }
 
-static bool get_form_param(const char *body, const char *key, char *out, size_t out_max)
+bool get_form_param(const char *body, const char *key, char *out, size_t out_max)
 {
     const size_t key_len = strlen(key);
     const char *p = body;
@@ -55,7 +56,7 @@ static bool get_form_param(const char *body, const char *key, char *out, size_t 
             const char *val_start = p + key_len + 1;
             const char *val_end = strchr(val_start, '&');
             size_t val_len = val_end ? (size_t)(val_end - val_start) : strlen(val_start);
-            char *enc = malloc(val_len + 1);
+            char *enc = static_cast<char *>(malloc(val_len + 1));
             if (enc == NULL) {
                 out[0] = '\0';
                 return false;
@@ -75,14 +76,67 @@ static bool get_form_param(const char *body, const char *key, char *out, size_t 
     return false;
 }
 
-static void delayed_restart_task(void *arg)
+// Портал настройки: три маршрута, как в master (app_setup.c:263-281).
+// Пары uri/method — часть протокола настройки, они не меняются при переезде в
+// класс. Хендлеры — статические trampoline-функции (httpd зовёт их без this),
+// экземпляр они достают из user_ctx запроса (спека §5).
+constexpr size_t kRouteCount = 3;
+
+}  // namespace
+
+Setup::Setup(Config &config, Wifi &wifi)
+    : m_config(config), m_wifi(wifi)
 {
-    (void)arg;
+    // SoftAP поднимается напрямую через esp_wifi_*: режим точки доступа — не
+    // клиентское подключение kouki::Wifi (открытая сеть, канал 1, портал).
+    // Ссылка на Wifi — точка стыка модулей по спеке §2.
+    (void)m_wifi;
+
+    // user_ctx — сам экземпляр: таблица принадлежит объекту, а не файлу.
+    m_routes[0] = httpd_uri_t{"/", HTTP_GET, &Setup::index_get_entry, this};
+    m_routes[1] = httpd_uri_t{"/index.html", HTTP_GET, &Setup::index_get_entry, this};
+    m_routes[2] = httpd_uri_t{"/save", HTTP_POST, &Setup::save_post_entry, this};
+}
+
+size_t Setup::route_count()
+{
+    return kRouteCount;
+}
+
+const httpd_uri_t *Setup::routes() const
+{
+    return m_routes;
+}
+
+esp_err_t Setup::index_get_entry(httpd_req_t *req)
+{
+    Setup *self = static_cast<Setup *>(req->user_ctx);
+    return self != nullptr ? self->index_get(req) : ESP_FAIL;
+}
+
+esp_err_t Setup::save_post_entry(httpd_req_t *req)
+{
+    Setup *self = static_cast<Setup *>(req->user_ctx);
+    return self != nullptr ? self->save_post(req) : ESP_FAIL;
+}
+
+void Setup::restart_entry(void *arg)
+{
+    static_cast<Setup *>(arg)->delayed_restart();
+}
+
+void Setup::console_entry(void *arg)
+{
+    static_cast<Setup *>(arg)->console_loop();
+}
+
+void Setup::delayed_restart()
+{
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
 }
 
-static esp_err_t index_get_handler(httpd_req_t *req)
+esp_err_t Setup::index_get(httpd_req_t *req)
 {
     const char *html =
         "<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
@@ -118,7 +172,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
-static esp_err_t save_post_handler(httpd_req_t *req)
+esp_err_t Setup::save_post(httpd_req_t *req)
 {
     int remaining = req->content_len;
     if (remaining <= 0 || remaining > 8192) {
@@ -126,7 +180,7 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char *buf = malloc(remaining + 1);
+    char *buf = static_cast<char *>(malloc(remaining + 1));
     if (buf == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Нет памяти");
         return ESP_FAIL;
@@ -225,22 +279,22 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         }
     }
 
-    kouki_config_set_wifi(ssid, pass);
-    kouki_config_set_url(url);
-    kouki_config_set_token(token);
-    kouki_config_set_source(src[0] ? src : KOUKI_CONFIG_DEFAULT_SOURCE);
-    kouki_config_set_ca_pem(p_pem);
-    kouki_config_set_wake_enabled(has_wake_en && (strcmp(wake_en_str, "1") == 0 || strcmp(wake_en_str, "on") == 0));
+    m_config.set_wifi(ssid, pass);
+    m_config.set_url(url);
+    m_config.set_token(token);
+    m_config.set_source(src[0] ? src : KOUKI_CONFIG_DEFAULT_SOURCE);
+    m_config.set_ca_pem(p_pem);
+    m_config.set_wake_enabled(has_wake_en && (strcmp(wake_en_str, "1") == 0 || strcmp(wake_en_str, "on") == 0));
     if (has_wake_th && wake_th_str[0] != '\0') {
         int th = atoi(wake_th_str);
         if (th >= KOUKI_CONFIG_MIN_WAKE_THRESHOLD && th <= KOUKI_CONFIG_MAX_WAKE_THRESHOLD) {
-            kouki_config_set_wake_threshold((uint8_t)th);
+            m_config.set_wake_threshold((uint8_t)th);
         }
     }
 
     free(buf);
 
-    esp_err_t err = kouki_config_save();
+    esp_err_t err = m_config.save();
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Ошибка записи в NVS");
         return ESP_FAIL;
@@ -256,34 +310,13 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
 
-    xTaskCreate(delayed_restart_task, "restart", 2048, NULL, 5, NULL);
+    xTaskCreate(restart_entry, "restart", 2048, this, 5, NULL);
     return ESP_OK;
 }
 
-static const httpd_uri_t uri_get_index = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = index_get_handler,
-    .user_ctx = NULL,
-};
-
-static const httpd_uri_t uri_get_index_html = {
-    .uri = "/index.html",
-    .method = HTTP_GET,
-    .handler = index_get_handler,
-    .user_ctx = NULL,
-};
-
-static const httpd_uri_t uri_post_save = {
-    .uri = "/save",
-    .method = HTTP_POST,
-    .handler = save_post_handler,
-    .user_ctx = NULL,
-};
-
-esp_err_t kouki_setup_start(void)
+esp_err_t Setup::start()
 {
-    s_setup_active = true;
+    m_active = true;
 
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
@@ -304,7 +337,7 @@ esp_err_t kouki_setup_start(void)
     const wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "esp_wifi_init");
 
-    wifi_config_t wifi_cfg = {0};
+    wifi_config_t wifi_cfg = {};
     strncpy((char *)wifi_cfg.ap.ssid, ap_ssid, sizeof(wifi_cfg.ap.ssid) - 1);
     wifi_cfg.ap.channel = 1;
     wifi_cfg.ap.authmode = WIFI_AUTH_OPEN;
@@ -318,11 +351,11 @@ esp_err_t kouki_setup_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    err = httpd_start(&s_server, &config);
+    err = httpd_start(&m_server, &config);
     if (err == ESP_OK) {
-        httpd_register_uri_handler(s_server, &uri_get_index);
-        httpd_register_uri_handler(s_server, &uri_get_index_html);
-        httpd_register_uri_handler(s_server, &uri_post_save);
+        httpd_register_uri_handler(m_server, &m_routes[0]);
+        httpd_register_uri_handler(m_server, &m_routes[1]);
+        httpd_register_uri_handler(m_server, &m_routes[2]);
         ESP_LOGI(TAG, "веб-сервер настройки поднят на порту 80");
     } else {
         ESP_LOGE(TAG, "не удалось запустить веб-сервер: %s", esp_err_to_name(err));
@@ -331,17 +364,17 @@ esp_err_t kouki_setup_start(void)
     return err;
 }
 
-bool kouki_setup_is_active(void)
+bool Setup::is_active() const
 {
-    return s_setup_active;
+    return m_active;
 }
 
-static void handle_console_command(const char *cmd)
+void Setup::handle_console_command(const char *cmd)
 {
     if (strcmp(cmd, "show") == 0) {
-        char *buf = malloc(512);
+        char *buf = static_cast<char *>(malloc(512));
         if (buf != NULL) {
-            kouki_config_format_masked(buf, 512);
+            m_config.format_masked(buf, 512);
             printf("\n=== Текущие настройки ===\n%s\n", buf);
             free(buf);
         } else {
@@ -389,7 +422,7 @@ static void handle_console_command(const char *cmd)
         } else {
             strncpy(ssid, args, sizeof(ssid) - 1);
         }
-        esp_err_t err = kouki_config_set_wifi(ssid, pass[0] ? pass : NULL);
+        esp_err_t err = m_config.set_wifi(ssid, pass[0] ? pass : NULL);
         if (err == ESP_OK) {
             printf("OK (Wi-Fi выставлен, выполните 'save' для сохранения в NVS)\n");
         } else {
@@ -398,7 +431,7 @@ static void handle_console_command(const char *cmd)
     } else if (strncmp(cmd, "set_token ", 10) == 0) {
         const char *tok = cmd + 10;
         while (*tok == ' ') tok++;
-        esp_err_t err = kouki_config_set_token(tok);
+        esp_err_t err = m_config.set_token(tok);
         if (err == ESP_OK) {
             printf("OK (токен выставлен, выполните 'save' для сохранения в NVS)\n");
         } else {
@@ -408,7 +441,7 @@ static void handle_console_command(const char *cmd)
     } else if (strncmp(cmd, "set_url ", 8) == 0) {
         const char *url = cmd + 8;
         while (*url == ' ') url++;
-        esp_err_t err = kouki_config_set_url(url);
+        esp_err_t err = m_config.set_url(url);
         if (err == ESP_OK) {
             printf("OK (URL выставлен, выполните 'save' для сохранения в NVS)\n");
         } else {
@@ -421,7 +454,7 @@ static void handle_console_command(const char *cmd)
     } else if (strncmp(cmd, "set_source ", 11) == 0) {
         const char *src = cmd + 11;
         while (*src == ' ') src++;
-        esp_err_t err = kouki_config_set_source(src);
+        esp_err_t err = m_config.set_source(src);
         if (err == ESP_OK) {
             printf("OK (источник выставлен, выполните 'save' для сохранения в NVS)\n");
         } else {
@@ -431,21 +464,21 @@ static void handle_console_command(const char *cmd)
         const char *arg = cmd + 11;
         while (*arg == ' ') arg++;
         int val = atoi(arg);
-        kouki_config_set_silent(val != 0);
+        m_config.set_silent(val != 0);
         printf("OK (режим тишины: %s, выполните 'save' для сохранения в NVS)\n",
                val != 0 ? "включен (без речи)" : "выключен (с речью)");
     } else if (strncmp(cmd, "set_wake ", 9) == 0) {
         const char *arg = cmd + 9;
         while (*arg == ' ') arg++;
         int val = atoi(arg);
-        kouki_config_set_wake_enabled(val != 0);
+        m_config.set_wake_enabled(val != 0);
         printf("OK (wake-word: %s, выполните 'save' для сохранения в NVS)\n",
                val != 0 ? "включен (\"эй гин\", отсечка 3.0с)" : "выключен");
     } else if (strncmp(cmd, "set_wake_th ", 12) == 0) {
         const char *arg = cmd + 12;
         while (*arg == ' ') arg++;
         int th = atoi(arg);
-        esp_err_t err = kouki_config_set_wake_threshold((uint8_t)th);
+        esp_err_t err = m_config.set_wake_threshold((uint8_t)th);
         if (err == ESP_OK) {
             printf("OK (порог wake-word: %d%%, выполните 'save' для сохранения в NVS)\n", th);
         } else {
@@ -455,14 +488,14 @@ static void handle_console_command(const char *cmd)
                    KOUKI_CONFIG_DEFAULT_WAKE_THRESHOLD);
         }
     } else if (strcmp(cmd, "save") == 0) {
-        esp_err_t err = kouki_config_save();
+        esp_err_t err = m_config.save();
         if (err == ESP_OK) {
             printf("OK (сохранено в NVS)\n");
         } else {
             printf("Ошибка сохранения (%s). Проверьте правильность через 'show'\n", esp_err_to_name(err));
         }
     } else if (strcmp(cmd, "reset") == 0) {
-        kouki_config_erase();
+        m_config.erase();
         printf("OK (настройки очищены из NVS)\n");
     } else if (strcmp(cmd, "record") == 0) {
         printf("Запуск записи (сессия TASK)…\n");
@@ -486,7 +519,7 @@ static void handle_console_command(const char *cmd)
 #if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
     } else if (strcmp(cmd, "test_seed_history") == 0) {
         kouki_history_clear();
-        kouki_voice_result_t *res = malloc(sizeof(kouki_voice_result_t));
+        kouki_voice_result_t *res = static_cast<kouki_voice_result_t *>(malloc(sizeof(kouki_voice_result_t)));
         if (res == NULL) {
             printf("Ошибка: нет памяти\n");
         } else {
@@ -521,7 +554,7 @@ static void handle_console_command(const char *cmd)
             printf("OK (добавлено %u записей в историю)\n", (unsigned)kouki_history_count());
         }
     } else if (strcmp(cmd, "test_mock_done") == 0) {
-        kouki_voice_result_t *res = calloc(1, sizeof(kouki_voice_result_t));
+        kouki_voice_result_t *res = static_cast<kouki_voice_result_t *>(calloc(1, sizeof(kouki_voice_result_t)));
         if (res == NULL) {
             printf("Ошибка: нет памяти\n");
         } else {
@@ -548,12 +581,10 @@ static void handle_console_command(const char *cmd)
     }
 }
 
-#define CONSOLE_LINE_MAX 512
 
-static void console_task(void *arg)
+void Setup::console_loop()
 {
-    (void)arg;
-    char *line = malloc(CONSOLE_LINE_MAX);
+    char *line = static_cast<char *>(malloc(kConsoleLineMax));
     if (line == NULL) {
         ESP_LOGE(TAG, "нет памяти под буфер консоли");
         vTaskDelete(NULL);
@@ -564,7 +595,7 @@ static void console_task(void *arg)
     printf("Введите 'help' для списка команд.\n> ");
     fflush(stdout);
 
-    while (fgets(line, CONSOLE_LINE_MAX, stdin) != NULL) {
+    while (fgets(line, kConsoleLineMax, stdin) != NULL) {
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
             line[--len] = '\0';
@@ -579,7 +610,7 @@ static void console_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t kouki_setup_console_init(void)
+esp_err_t Setup::console_init()
 {
     usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     esp_err_t err = usb_serial_jtag_driver_install(&cfg);
@@ -588,6 +619,35 @@ esp_err_t kouki_setup_console_init(void)
         usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CRLF);
         usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
     }
-    BaseType_t res = xTaskCreate(console_task, "kouki.console", 6144, NULL, 3, NULL);
+    BaseType_t res = xTaskCreate(console_entry, "kouki.console", 6144, this, 3, NULL);
     return res == pdPASS ? ESP_OK : ESP_FAIL;
 }
+
+Setup &setup()
+{
+    // Один экземпляр на образ: без new/delete и без деструктора.
+    static Setup s_instance(config(), wifi());
+    return s_instance;
+}
+
+}  // namespace kouki
+
+// Публичный C-API: тонкий фасад на единственный экземпляр.
+extern "C" {
+
+esp_err_t kouki_setup_start(void)
+{
+    return kouki::setup().start();
+}
+
+bool kouki_setup_is_active(void)
+{
+    return kouki::setup().is_active();
+}
+
+esp_err_t kouki_setup_console_init(void)
+{
+    return kouki::setup().console_init();
+}
+
+}  // extern "C"

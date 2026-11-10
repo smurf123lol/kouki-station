@@ -24,9 +24,11 @@ tools/test-host.sh --help   # справка
 | `test_ui_statemachine.cpp` | реальные классы `kouki::ui`: тач-зоны, свайпы, VAD-дуга, карточка ответа, история, настройки, модалки OTA/Setup |
 | `test_speech_host.c` | реальный `app_speech.cpp` (t116, C-стенд): WAV/стерео, нарезка по фразам, блокировки аудио, abort/поколения, EAGAIN |
 | `test_speech.cpp` | `kouki::Speech` (t121 П10): границы `wav_parse`/`stereo_expand`, состояние busy/playing/worker, равенство фасада и методов класса |
+| `test_setup.cpp` | `kouki::Setup` (t121 П11): имя SoftAP из MAC, регистрация маршрутов, валидации формы `/save`, консольные команды и подъём USB-Serial-JTAG консоли |
 | `test_config.cpp` | реальный `app_config.cpp`: `kouki::Config` на моке NVS (ключи 1:1, миграция `wake_mig`, `save`/`erase`, `is_complete`, маскирование секретов) |
 | `support/` | заглушки `esp_err.h`, `esp_log.h`, `esp_app_desc.h`, `esp_board_init.h`, `lvgl_mock.hpp` |
 | `support/speech/` | заглушки esp_http_client/heap/freertos, `sdkconfig.h`, `stubs.c` (кодек/HTTP) и `speech_factories.cpp` (фабрика `kouki::audio_out()` без worker'а) для стенда озвучки |
+| `support/setup/` | моки httpd (`esp_http_server.h`), SoftAP/MAC, USB-Serial-JTAG, heap и задач для стенда портала настройки |
 | `support/cjson/` | cJSON 1.7.19 (MIT) — копия зависимости образа, чтобы стенд не требовал ESP-IDF |
 | `support/config_mock/` | мок NVS, заглушки `nvs.h`/`nvs_flash.h`/`mbedtls`, `sdkconfig.h` и символ вшитого CA для стенда конфигурации |
 

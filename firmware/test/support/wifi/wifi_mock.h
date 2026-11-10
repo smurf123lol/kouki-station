@@ -48,6 +48,13 @@ int wifi_mock_set_mode_calls(void);
 int wifi_mock_set_config_calls(void);
 int wifi_mock_netif_init_calls(void);
 int wifi_mock_create_sta_calls(void);
+int wifi_mock_create_ap_calls(void);
+
+/** Параметры последнего esp_wifi_set_config(WIFI_IF_AP, ...). */
+const char *wifi_mock_ap_ssid(void);
+int wifi_mock_ap_channel(void);
+wifi_auth_mode_t wifi_mock_ap_authmode(void);
+int wifi_mock_ap_max_connection(void);
 int wifi_mock_get_ip_info_calls(void);
 
 /** Параметры последнего esp_wifi_set_config(). */

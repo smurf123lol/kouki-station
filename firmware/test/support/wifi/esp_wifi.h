@@ -59,8 +59,21 @@ typedef struct {
     uint8_t bssid[6];
 } wifi_sta_config_t;
 
+/** Конфигурация точки доступа (SoftAP портала настройки, T121 П11). */
+typedef struct {
+    uint8_t ssid[32];
+    uint8_t password[64];
+    uint8_t ssid_len;
+    uint8_t channel;
+    wifi_auth_mode_t authmode;
+    uint8_t ssid_hidden;
+    uint8_t max_connection;
+    uint16_t beacon_interval;
+} wifi_ap_config_t;
+
 typedef struct {
     wifi_sta_config_t sta;
+    wifi_ap_config_t ap;
 } wifi_config_t;
 
 typedef struct {

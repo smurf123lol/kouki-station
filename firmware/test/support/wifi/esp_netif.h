@@ -48,6 +48,7 @@ typedef struct {
 
 esp_err_t esp_netif_init(void);
 esp_netif_t *esp_netif_create_default_wifi_sta(void);
+esp_netif_t *esp_netif_create_default_wifi_ap(void);
 esp_netif_t *esp_netif_get_handle_from_ifkey(const char *ifkey);
 esp_err_t esp_netif_get_ip_info(esp_netif_t *netif, esp_netif_ip_info_t *ip_info);
 char *esp_ip4addr_ntoa(const esp_ip4_addr_t *addr, char *buf, int buflen);

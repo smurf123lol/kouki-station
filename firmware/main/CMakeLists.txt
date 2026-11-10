@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "./main.c"
         "./app_config.cpp"
-        "./app_setup.c"
+        "./app_setup.cpp"
         "./app_wifi.cpp"
         "./app_http.cpp"
         "./app_voice.cpp"

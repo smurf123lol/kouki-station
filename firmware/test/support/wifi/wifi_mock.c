@@ -49,6 +49,7 @@ static int s_set_config_calls;
 static int s_inactive_calls = -1;
 static int s_netif_init_calls;
 static int s_create_sta_calls;
+static int s_create_ap_calls;
 static int s_get_ip_info_calls;
 static int s_event_group_create_calls;
 
@@ -57,6 +58,10 @@ static char s_password[65];
 static wifi_auth_mode_t s_authmode = WIFI_AUTH_OPEN;
 static wifi_interface_t s_config_if = WIFI_IF_STA;
 static wifi_mode_t s_mode = WIFI_MODE_NULL;
+static char s_ap_ssid[33];
+static int s_ap_channel = -1;
+static wifi_auth_mode_t s_ap_authmode = WIFI_AUTH_OPEN;
+static int s_ap_max_connection = -1;
 
 static esp_timer_cb_t s_timer_cb;
 static void *s_timer_arg;
@@ -168,6 +173,14 @@ esp_err_t esp_wifi_set_config(wifi_interface_t interface, const wifi_config_t *c
         s_password[sizeof(s_password) - 1] = '\0';
         s_authmode = config->sta.threshold.authmode;
     }
+    if (interface == WIFI_IF_AP) {
+        const wifi_ap_config_t *ap = &config->ap;
+        strncpy(s_ap_ssid, (const char *)ap->ssid, sizeof(s_ap_ssid) - 1);
+        s_ap_ssid[sizeof(s_ap_ssid) - 1] = '\0';
+        s_ap_channel = ap->channel;
+        s_ap_authmode = ap->authmode;
+        s_ap_max_connection = ap->max_connection;
+    }
     return ESP_OK;
 }
 
@@ -225,6 +238,12 @@ esp_err_t esp_netif_init(void)
 esp_netif_t *esp_netif_create_default_wifi_sta(void)
 {
     s_create_sta_calls++;
+    return (esp_netif_t *)&s_netif_init_calls;
+}
+
+esp_netif_t *esp_netif_create_default_wifi_ap(void)
+{
+    s_create_ap_calls++;
     return (esp_netif_t *)&s_netif_init_calls;
 }
 
@@ -342,6 +361,11 @@ void wifi_mock_reset(void)
     s_inactive_calls = -1;
     s_netif_init_calls = 0;
     s_create_sta_calls = 0;
+    s_create_ap_calls = 0;
+    s_ap_ssid[0] = '\0';
+    s_ap_channel = -1;
+    s_ap_authmode = WIFI_AUTH_OPEN;
+    s_ap_max_connection = -1;
     s_get_ip_info_calls = 0;
     s_event_group_create_calls = 0;
     memset(s_ssid, 0, sizeof(s_ssid));
@@ -395,6 +419,12 @@ int wifi_mock_start_calls(void) { return s_start_calls; }
 int wifi_mock_set_mode_calls(void) { return s_set_mode_calls; }
 int wifi_mock_set_config_calls(void) { return s_set_config_calls; }
 int wifi_mock_netif_init_calls(void) { return s_netif_init_calls; }
+int wifi_mock_create_ap_calls(void) { return s_create_ap_calls; }
+const char *wifi_mock_ap_ssid(void) { return s_ap_ssid; }
+int wifi_mock_ap_channel(void) { return s_ap_channel; }
+wifi_auth_mode_t wifi_mock_ap_authmode(void) { return s_ap_authmode; }
+int wifi_mock_ap_max_connection(void) { return s_ap_max_connection; }
+
 int wifi_mock_create_sta_calls(void) { return s_create_sta_calls; }
 int wifi_mock_get_ip_info_calls(void) { return s_get_ip_info_calls; }
 
