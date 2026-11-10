@@ -114,10 +114,10 @@ run "app_audio_out.c" "$CC" -std=gnu11 -Wall -Wextra -I"$SUPPORT" -I"$MAIN" -c "
 run "app_vad.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.c" -o "$OBJ_DIR/app_vad.o"
 run "cJSON.c" "$CC" -std=gnu11 -O2 -I"$CJSON_DIR" -c "$CJSON_DIR/cJSON.c" -o "$OBJ_DIR/cJSON.o"
 
-run "app_history.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.c" -o "$OBJ_DIR/app_history.o"
 run "app_power.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_power.c" -o "$OBJ_DIR/app_power.o"
 echo "=== Компиляция C++-модулей П3 (-Wall -Wextra) ==="
 run "app_time.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_time.cpp" -o "$OBJ_DIR/app_time.o"
+run "app_history.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.cpp" -o "$OBJ_DIR/app_history.o"
 
 echo "=== t111: C++ Voice FSM Suite ==="
 run "t111 build" "$CXX" -std=c++17 -Wall -Wextra \
