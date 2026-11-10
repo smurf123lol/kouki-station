@@ -29,7 +29,7 @@ idf_component_register(
         "./app_audio_out.c"
         "./app_speech.c"
         "./app_ota.c"
-        "./app_time.c"
+        "./app_time.cpp"
         "./app_power.c"
         "./app_history.c"
         # Драйверы Waveshare (Apache-2.0), см. main/drivers/README.md

@@ -110,12 +110,14 @@ run() {
 }
 
 echo "=== Компиляция C-модулей (-Wall -Wextra) ==="
-run "app_history.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.c" -o "$OBJ_DIR/app_history.o"
-run "app_time.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_time.c" -o "$OBJ_DIR/app_time.o"
-run "app_power.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_power.c" -o "$OBJ_DIR/app_power.o"
 run "app_audio_out.c" "$CC" -std=gnu11 -Wall -Wextra -I"$SUPPORT" -I"$MAIN" -c "$MAIN/app_audio_out.c" -o "$OBJ_DIR/app_audio_out.o"
 run "app_vad.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_vad.c" -o "$OBJ_DIR/app_vad.o"
 run "cJSON.c" "$CC" -std=gnu11 -O2 -I"$CJSON_DIR" -c "$CJSON_DIR/cJSON.c" -o "$OBJ_DIR/cJSON.o"
+
+run "app_history.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_history.c" -o "$OBJ_DIR/app_history.o"
+run "app_power.c" "$CC" -std=gnu11 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_power.c" -o "$OBJ_DIR/app_power.o"
+echo "=== Компиляция C++-модулей П3 (-Wall -Wextra) ==="
+run "app_time.cpp" "$CXX" -std=c++17 -Wall -Wextra -I"$MAIN" -c "$MAIN/app_time.cpp" -o "$OBJ_DIR/app_time.o"
 
 echo "=== t111: C++ Voice FSM Suite ==="
 run "t111 build" "$CXX" -std=c++17 -Wall -Wextra \
@@ -175,5 +177,16 @@ run "config build" "$CXX" -std=c++17 -Wall -Wextra \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -o "$OBJ_DIR/test_config_bin"
 run "config run" "$OBJ_DIR/test_config_bin"
+
+echo "=== t121: Time, History, Power (классы + C-фасад) ==="
+run "modules build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$MAIN" -I"$MAIN/fsm" -I"$CJSON_DIR" \
+    "$TEST/test_time_history_power.cpp" \
+    "${FSM_CPP[@]}" \
+    "$OBJ_DIR/app_history.o" "$OBJ_DIR/app_time.o" "$OBJ_DIR/app_power.o" \
+    "$OBJ_DIR/app_vad.o" "$OBJ_DIR/cJSON.o" \
+    -lm \
+    -o "$OBJ_DIR/test_modules_bin"
+run "modules run" "$OBJ_DIR/test_modules_bin"
 
 echo "=== ALL HOSTCHECKS PASSED ==="
