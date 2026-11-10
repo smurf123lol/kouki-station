@@ -1,191 +1,169 @@
-#include "app_voice.h"
-#include "app_vad.h"
-#include "fsm/voice_state_manager.hpp"
-#include "fsm/states/idle_state.hpp"
-#include "fsm/states/recording_state.hpp"
-#include "fsm/states/sending_state.hpp"
-#include "fsm/states/done_state.hpp"
-#include "fsm/states/followup_state.hpp"
-#include "fsm/states/error_state.hpp"
+// Голосовое ядро станции (T121 П12): класс kouki::Voice вместо C-модуля
+// со static-состоянием.
+//
+// Состояние модуля (прежние static app_voice.cpp:32-41) живёт в экземпляре
+// kouki::voice(): автомат VoiceStateManager, шесть объектов состояний, буфер
+// записи в PSRAM и рабочие буферы задачи записи. C-API kouki_voice_* в конце
+// файла — тонкий фасад: тело каждого метода — один вызов класса.
+//
+// ИНВАРИАНТ I2S (AGENTS.md п.1): микрофон читает только задача записи
+// (record_task_entry -> read_mic -> esp_get_feed_data). Детектор кодового
+// слова получает готовый PCM из того же потока через FSM
+// (IdleState::on_step -> kouki_wake_feed), а не открывает I2S сам. Второй
+// вызов esp_get_feed_data в файле есть только в debug_levels() — это
+// диагностика по явной команде оператора, её не расширяем.
+#include "app_voice.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cinttypes>
 
+#include "app_config.hpp"
+#include "app_vad.hpp"
+#include "app_wake.hpp"
+
 #ifdef ESP_PLATFORM
-#include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "app_config.h"
-#include "app_wifi.h"
+
+// Типы и константы канала записи: те же, что были у C-модуля.
 #include "app_tone.h"
-#include "app_wake.h"
+#include "app_wifi.h"
 #include "esp_board_init.h"
-static const char *TAG = "kouki.voice";
 #endif
 
-using namespace kouki::voice;
+namespace kouki {
 
-static VoiceStateManager s_manager;
-static IdleState s_idle_state;
-static RecordingState s_recording_state;
-static SendingState s_sending_state;
-static DoneState s_done_state;
-static FollowupState s_followup_state;
-static ErrorState s_error_state;
+namespace {
 
-static uint8_t *s_buf = nullptr;
-static size_t s_capacity_bytes = 0;
+const char *const kTag = "kouki.voice";
 
-#ifdef ESP_PLATFORM
-/* Читает один кусок с микрофона и отдаёт выбранный канал в dst (frames сэмплов). */
-static esp_err_t read_mic(int16_t *dst, int frames)
+/** Каналов в потоке I2S: 4 (raw) или 3 (обработанный). */
+constexpr int kRawChannels = 4;
+
+}  // namespace
+
+Voice::Voice(Config &config, Vad &vad, Wake &wake)
+    : m_config(config), m_vad(vad), m_wake(wake)
 {
-    const int channels = esp_get_feed_channel() > 0 ? esp_get_feed_channel() : 4;
-    const int mic = CONFIG_KOUKI_MIC_CHANNEL < channels ? CONFIG_KOUKI_MIC_CHANNEL : 0;
-    static int16_t raw[RECORD_CHUNK * 4];
-
-    if (mic >= 4 || frames > static_cast<int>(RECORD_CHUNK)) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const int bytes = frames * channels * BYTES_PER_SAMPLE;
-    ESP_RETURN_ON_ERROR(esp_get_feed_data(true, raw, bytes), TAG, "чтение микрофона не удалось");
-
-    for (int i = 0; i < frames; i++) {
-        int32_t value = static_cast<int32_t>(raw[i * channels + mic]) * CONFIG_KOUKI_MIC_GAIN;
-        if (value > INT16_MAX) {
-            value = INT16_MAX;
-        } else if (value < INT16_MIN) {
-            value = INT16_MIN;
-        }
-        dst[i] = static_cast<int16_t>(value);
-    }
-
-    return ESP_OK;
+    // Зависимости принимаются по спеке §2: Config даёт адрес сервера для
+    // стартового лога, Vad и Wake инициализируются в init(). Прямых вызовов
+    // в конструкторе нет — экземпляр создаётся статически до готовности
+    // NVS/радио.
 }
 
-static void record_task(void *arg)
-{
-    (void)arg;
-    static int16_t mono[RECORD_CHUNK];
-
-    while (true) {
-        if (read_mic(mono, RECORD_CHUNK) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            s_manager.step(nullptr, 0);
-            continue;
-        }
-
-        s_manager.step(mono, RECORD_CHUNK);
-    }
-}
-#endif
-
-extern "C" {
-
-esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
+esp_err_t Voice::init(kouki_voice_event_cb_t cb, void *ctx)
 {
 #ifdef ESP_PLATFORM
-    s_capacity_bytes = static_cast<size_t>(CONFIG_KOUKI_MAX_RECORD_S) * SAMPLE_RATE * BYTES_PER_SAMPLE;
-    s_buf = static_cast<uint8_t *>(heap_caps_malloc(WAV_HEADER_SIZE + s_capacity_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!s_buf) {
-        ESP_LOGE(TAG, "не хватило PSRAM под %u байт записи", static_cast<unsigned>(WAV_HEADER_SIZE + s_capacity_bytes));
+    m_capacity_bytes = static_cast<size_t>(CONFIG_KOUKI_MAX_RECORD_S) *
+                       kouki::voice::SAMPLE_RATE * kouki::voice::BYTES_PER_SAMPLE;
+    m_buf = static_cast<uint8_t *>(heap_caps_malloc(kouki::voice::WAV_HEADER_SIZE + m_capacity_bytes,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (m_buf == nullptr) {
+        ESP_LOGE(kTag, "не хватило PSRAM под %u байт записи",
+                 static_cast<unsigned>(kouki::voice::WAV_HEADER_SIZE + m_capacity_bytes));
         return ESP_ERR_NO_MEM;
     }
 #else
-    s_capacity_bytes = 15 * SAMPLE_RATE * BYTES_PER_SAMPLE;
-    s_buf = static_cast<uint8_t *>(std::malloc(WAV_HEADER_SIZE + s_capacity_bytes));
+    m_capacity_bytes = 15 * kouki::voice::SAMPLE_RATE * kouki::voice::BYTES_PER_SAMPLE;
+    m_buf = static_cast<uint8_t *>(std::malloc(kouki::voice::WAV_HEADER_SIZE + m_capacity_bytes));
 #endif
 
     // Регистрируем состояния в менеджере
-    s_manager.register_state(&s_idle_state);
-    s_manager.register_state(&s_recording_state);
-    s_manager.register_state(&s_sending_state);
-    s_manager.register_state(&s_done_state);
-    s_manager.register_state(&s_followup_state);
-    s_manager.register_state(&s_error_state);
+    m_manager.register_state(&m_idle_state);
+    m_manager.register_state(&m_recording_state);
+    m_manager.register_state(&m_sending_state);
+    m_manager.register_state(&m_done_state);
+    m_manager.register_state(&m_followup_state);
+    m_manager.register_state(&m_error_state);
 
     // Настраиваем буфер в контексте
-    s_manager.context().buffer = s_buf;
-    s_manager.context().capacity_bytes = s_capacity_bytes;
-    s_manager.context().sample_bytes = 0;
+    m_manager.context().buffer = m_buf;
+    m_manager.context().capacity_bytes = m_capacity_bytes;
+    m_manager.context().sample_bytes = 0;
 
     // Инициализируем FSM
-    s_manager.init(cb, ctx);
-    kouki_vad_init();
+    m_manager.init(cb, ctx);
+    m_vad.init();
 
 #ifdef ESP_PLATFORM
-    if (xTaskCreatePinnedToCore(record_task, "kouki.record", 8192, nullptr, 5, nullptr, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(record_task_entry, "kouki.record", 8192, this, 5, nullptr, 1) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
 
-    if (kouki_wake_init() != ESP_OK) {
-        ESP_LOGI(TAG, "wake-word деактивирован или недоступен, работаем по кнопке");
+    if (m_wake.init() != ESP_OK) {
+        ESP_LOGI(kTag, "wake-word деактивирован или недоступен, работаем по кнопке");
     }
 
-    ESP_LOGI(TAG, "C++ FSM голосовое ядро запущено: макс %d с, сервер %s",
-             CONFIG_KOUKI_MAX_RECORD_S, kouki_config_get_srv_url());
+    ESP_LOGI(kTag, "C++ FSM голосовое ядро запущено: макс %d с, сервер %s",
+             CONFIG_KOUKI_MAX_RECORD_S, m_config.srv_url());
 #endif
 
     return ESP_OK;
 }
 
-esp_err_t kouki_voice_set_session(kouki_session_t session)
+esp_err_t Voice::set_session(kouki_session_t session)
 {
-    return s_manager.try_set_session(session) ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return m_manager.try_set_session(session) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
-kouki_session_t kouki_voice_get_session(void)
+kouki_session_t Voice::session() const
 {
-    return s_manager.get_session();
+    return m_manager.get_session();
 }
 
-esp_err_t kouki_voice_start_recording(void)
+esp_err_t Voice::start_recording()
 {
-    if (s_manager.current_id() == StateId::Sending) {
+    if (m_manager.current_id() == kouki::voice::StateId::Sending) {
         return ESP_ERR_INVALID_STATE;
     }
 #ifdef ESP_PLATFORM
     if (!kouki_wifi_is_connected()) {
         kouki_tone_play(KOUKI_TONE_ERROR);
-        ESP_LOGW(TAG, "запись не началась: нет подключения к Wi-Fi");
+        ESP_LOGW(kTag, "запись не началась: нет подключения к Wi-Fi");
         return ESP_ERR_INVALID_STATE;
     }
 #endif
-    return s_manager.start_recording_from_button() ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return m_manager.start_recording_from_button() ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t kouki_voice_stop_and_send(void)
+esp_err_t Voice::stop_and_send()
 {
-    s_manager.stop_and_send_from_button();
+    m_manager.stop_and_send_from_button();
     return ESP_OK;
 }
 
-void kouki_voice_debug_levels(void)
+void Voice::debug_levels()
 {
 #ifdef ESP_PLATFORM
-    static int16_t raw[RECORD_CHUNK * 4];
-    const int raw_channels = 4;
-    const int bytes = RECORD_CHUNK * raw_channels * BYTES_PER_SAMPLE;
+    // Рабочий буфер диагностики — как в master: function-local static, а не
+    // член класса. При выключенном CONFIG_KOUKI_DEBUG_MIC функция не
+    // вызывается, и линкер с --gc-sections выбрасывает её вместе с буфером;
+    // член класса остался бы в .bss всегда и съел 8 КБ внутренней RAM.
+    static int16_t debug_raw[kouki::voice::RECORD_CHUNK * kRawChannels];
+    const int bytes = static_cast<int>(kouki::voice::RECORD_CHUNK) * kRawChannels *
+                      static_cast<int>(kouki::voice::BYTES_PER_SAMPLE);
 
     for (int mode = 0; mode < 2; mode++) {
         const bool get_raw = (mode == 0);
-        const int channels = get_raw ? raw_channels : 3;
+        const int channels = get_raw ? kRawChannels : 3;
         uint64_t sums[4] = {0};
         int chunks = 0;
 
         for (int c = 0; c < 12; c++) {
-            if (esp_get_feed_data(get_raw, raw, bytes) != ESP_OK) {
-                ESP_LOGE(TAG, "диагностика: чтение не удалось (raw=%d)", get_raw);
+            // Диагностика: второй (и последний) читатель микрофона в файле.
+            // Работает только по явной команде оператора, не в потоке записи.
+            if (esp_get_feed_data(get_raw, debug_raw, bytes) != ESP_OK) {
+                ESP_LOGE(kTag, "диагностика: чтение не удалось (raw=%d)", get_raw);
                 continue;
             }
-            for (int i = 0; i < RECORD_CHUNK; i++) {
+            for (int i = 0; i < static_cast<int>(kouki::voice::RECORD_CHUNK); i++) {
                 for (int ch = 0; ch < channels; ch++) {
-                    sums[ch] += static_cast<uint64_t>(std::abs(raw[i * channels + ch]));
+                    sums[ch] += static_cast<uint64_t>(std::abs(debug_raw[i * channels + ch]));
                 }
             }
             chunks++;
@@ -193,47 +171,49 @@ void kouki_voice_debug_levels(void)
 
         if (chunks == 0) continue;
 
-        ESP_LOGI(TAG, "уровни каналов (raw=%d, каналов %d): %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64,
+        const uint64_t divisor = static_cast<uint64_t>(chunks) * kouki::voice::RECORD_CHUNK;
+        ESP_LOGI(kTag, "уровни каналов (raw=%d, каналов %d): %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64,
                  get_raw, channels,
-                 sums[0] / static_cast<uint64_t>(chunks * RECORD_CHUNK),
-                 channels > 1 ? sums[1] / static_cast<uint64_t>(chunks * RECORD_CHUNK) : 0,
-                 channels > 2 ? sums[2] / static_cast<uint64_t>(chunks * RECORD_CHUNK) : 0,
-                 channels > 3 ? sums[3] / static_cast<uint64_t>(chunks * RECORD_CHUNK) : 0);
+                 sums[0] / divisor,
+                 channels > 1 ? sums[1] / divisor : 0,
+                 channels > 2 ? sums[2] / divisor : 0,
+                 channels > 3 ? sums[3] / divisor : 0);
     }
 #endif
 }
 
-kouki_voice_state_t kouki_voice_get_state(void)
+kouki_voice_state_t Voice::state() const
 {
-    return to_c_state(s_manager.current_id());
+    return kouki::voice::to_c_state(m_manager.current_id());
 }
 
-esp_err_t kouki_voice_dismiss_error(void)
+esp_err_t Voice::dismiss_error()
 {
-    return s_manager.dismiss_error() ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return m_manager.dismiss_error() ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
-bool kouki_voice_is_recording(void)
+bool Voice::is_recording() const
 {
-    return s_manager.current_id() == StateId::Recording;
+    return m_manager.current_id() == kouki::voice::StateId::Recording;
 }
 
-bool kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result)
+bool Voice::get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result) const
 {
-    return s_manager.get_snapshot(state, result);
+    return m_manager.get_snapshot(state, result);
 }
 
-void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics)
+void Voice::get_metrics(kouki_voice_metrics_t *metrics) const
 {
-    s_manager.get_metrics(metrics);
+    m_manager.get_metrics(metrics);
 }
 
-void kouki_voice_print_state(void)
+void Voice::print_state() const
 {
-    FsmDiagnostics d = s_manager.get_diagnostics();
+    const kouki::voice::FsmDiagnostics d = m_manager.get_diagnostics();
     kouki_voice_metrics_t m{};
-    s_manager.get_metrics(&m);
-    double seconds = static_cast<double>(d.buffer_used / BYTES_PER_SAMPLE) / static_cast<double>(SAMPLE_RATE);
+    m_manager.get_metrics(&m);
+    const double seconds = static_cast<double>(d.buffer_used / kouki::voice::BYTES_PER_SAMPLE) /
+                           static_cast<double>(kouki::voice::SAMPLE_RATE);
 
     std::printf("\n--- FSM Состояние ---\n");
     std::printf("Текущее:       %s\n", d.current_name);
@@ -253,13 +233,136 @@ void kouki_voice_print_state(void)
 }
 
 #if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
-esp_err_t kouki_voice_test_mock_done(const kouki_voice_result_t *result)
+esp_err_t Voice::test_mock_done(const kouki_voice_result_t &result)
 {
-    if (!result) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return s_manager.force_done_for_test(*result) ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return m_manager.force_done_for_test(result) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 #endif
 
-} // extern "C"
+#ifdef ESP_PLATFORM
+esp_err_t Voice::read_mic(int16_t *dst, int frames)
+{
+    const int channels = esp_get_feed_channel() > 0 ? esp_get_feed_channel() : kRawChannels;
+    const int mic = CONFIG_KOUKI_MIC_CHANNEL < channels ? CONFIG_KOUKI_MIC_CHANNEL : 0;
+
+    if (mic >= kRawChannels || frames > static_cast<int>(kouki::voice::RECORD_CHUNK)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const int bytes = frames * channels * static_cast<int>(kouki::voice::BYTES_PER_SAMPLE);
+    // Единственное чтение микрофона в потоке записи.
+    ESP_RETURN_ON_ERROR(esp_get_feed_data(true, m_mic_raw, bytes), kTag, "чтение микрофона не удалось");
+
+    for (int i = 0; i < frames; i++) {
+        int32_t value = static_cast<int32_t>(m_mic_raw[i * channels + mic]) * CONFIG_KOUKI_MIC_GAIN;
+        if (value > INT16_MAX) {
+            value = INT16_MAX;
+        } else if (value < INT16_MIN) {
+            value = INT16_MIN;
+        }
+        dst[i] = static_cast<int16_t>(value);
+    }
+
+    return ESP_OK;
+}
+
+void Voice::record_loop()
+{
+    while (true) {
+        if (read_mic(m_mono, static_cast<int>(kouki::voice::RECORD_CHUNK)) != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            m_manager.step(nullptr, 0);
+            continue;
+        }
+
+        m_manager.step(m_mono, kouki::voice::RECORD_CHUNK);
+    }
+}
+
+void Voice::record_task_entry(void *arg)
+{
+    static_cast<Voice *>(arg)->record_loop();
+}
+#endif
+
+Voice &voice_engine()
+{
+    static Voice s_instance(config(), vad(), wake());
+    return s_instance;
+}
+
+}  // namespace kouki
+
+extern "C" {
+
+esp_err_t kouki_voice_init(kouki_voice_event_cb_t cb, void *ctx)
+{
+    return kouki::voice_engine().init(cb, ctx);
+}
+
+esp_err_t kouki_voice_set_session(kouki_session_t session)
+{
+    return kouki::voice_engine().set_session(session);
+}
+
+kouki_session_t kouki_voice_get_session(void)
+{
+    return kouki::voice_engine().session();
+}
+
+esp_err_t kouki_voice_start_recording(void)
+{
+    return kouki::voice_engine().start_recording();
+}
+
+esp_err_t kouki_voice_stop_and_send(void)
+{
+    return kouki::voice_engine().stop_and_send();
+}
+
+void kouki_voice_debug_levels(void)
+{
+    kouki::voice_engine().debug_levels();
+}
+
+kouki_voice_state_t kouki_voice_get_state(void)
+{
+    return kouki::voice_engine().state();
+}
+
+esp_err_t kouki_voice_dismiss_error(void)
+{
+    return kouki::voice_engine().dismiss_error();
+}
+
+bool kouki_voice_is_recording(void)
+{
+    return kouki::voice_engine().is_recording();
+}
+
+bool kouki_voice_get_snapshot(kouki_voice_state_t *state, kouki_voice_result_t *result)
+{
+    return kouki::voice_engine().get_snapshot(state, result);
+}
+
+void kouki_voice_get_metrics(kouki_voice_metrics_t *metrics)
+{
+    kouki::voice_engine().get_metrics(metrics);
+}
+
+void kouki_voice_print_state(void)
+{
+    kouki::voice_engine().print_state();
+}
+
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+esp_err_t kouki_voice_test_mock_done(const kouki_voice_result_t *result)
+{
+    if (result == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return kouki::voice_engine().test_mock_done(*result);
+}
+#endif
+
+}  // extern "C"

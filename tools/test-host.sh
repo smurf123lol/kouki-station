@@ -358,4 +358,25 @@ run "setup build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_setup_bin"
 run "setup run" "$OBJ_DIR/test_setup_bin"
 
+echo "=== t121: Voice (kouki::Voice + C-фасад, инвариант одного владельца I2S) ==="
+# Голосовое ядро без платы: на хосте I2S-путь под #ifdef ESP_PLATFORM не
+# собирается, поэтому стенд проверяет инвариант по исходникам firmware/main
+# (KOUKI_MAIN_DIR), сессии, колбэк событий и равенство фасада классу.
+# В линковку входят настоящие Config, Vad и Wake: фабрика kouki::voice_engine()
+# берёт их ссылками (того требует спека §2), а Wake поднимает esp-dl-мок.
+run "voice build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$WAKE" -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" -I"$MAIN/fsm" \
+    -DKOUKI_MAIN_DIR="\"$MAIN\"" \
+    "$TEST/test_voice.cpp" \
+    "$MAIN/app_voice.cpp" "$MAIN/app_wake.cpp" "$MAIN/app_vad.cpp" \
+    "$MAIN/app_config.cpp" "$MAIN/app_http.cpp" \
+    "${FSM_CPP[@]}" \
+    "$OBJ_DIR/app_history.o" "$OBJ_DIR/app_time.o" "$OBJ_DIR/app_power.o" \
+    "$OBJ_DIR/wake_mock.o" "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    "$OBJ_DIR/cJSON.o" \
+    -lm \
+    -o "$OBJ_DIR/test_voice_bin"
+run "voice run" "$OBJ_DIR/test_voice_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="
