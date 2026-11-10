@@ -26,6 +26,11 @@ struct esp_http_client {
 };
 
 static esp_http_client_config_t s_last_cfg;
+/* Копия url: модуль собирает url в локальном буфере вызывающей функции, и
+ * указатель в сохранённом конфиге умирал бы вместе с её стеком. Стенд читает
+ * URL после возврата из модуля (test_ota.cpp:350/:352), поэтому мок обязан
+ * владеть строкой сам. */
+static char s_last_url[512];
 static bool s_have_cfg = false;
 static int s_init_calls = 0;
 static bool s_fail_next_init = false;
@@ -50,6 +55,7 @@ static bool s_write_fail = false;
 void http_mock_reset(void)
 {
     memset(&s_last_cfg, 0, sizeof(s_last_cfg));
+    memset(s_last_url, 0, sizeof(s_last_url));
     s_have_cfg = false;
     s_init_calls = 0;
     s_fail_next_init = false;
@@ -118,6 +124,10 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
     }
     if (config != NULL) {
         s_last_cfg = *config;
+        if (config->url != NULL) {
+            snprintf(s_last_url, sizeof(s_last_url), "%s", config->url);
+            s_last_cfg.url = s_last_url;
+        }
         s_have_cfg = true;
     }
     struct esp_http_client *client = calloc(1, sizeof(*client));

@@ -93,7 +93,10 @@ static void test_new_client_https()
     CHECK(str_eq(seen->cert_pem, kouki::config().effective_ca_pem()),
           "cert_pem is Config::effective_ca_pem()");
     CHECK(seen->event_handler != NULL, "default event_handler installed");
-    CHECK(seen->url == cfg.url, "url passed through unchanged");
+    /* Мок хранит копию строки url (см. http_mock.c: модуль собирает URL в
+     * локальном буфере, и смотреть на него после возврата — UB). Поэтому
+     * проверяем неизменность содержимого, а не совпадение указателей. */
+    CHECK(str_eq(seen->url, cfg.url), "url passed through unchanged");
     esp_http_client_cleanup(client);
 
     // Явно заданный таймаут не перетирается.
