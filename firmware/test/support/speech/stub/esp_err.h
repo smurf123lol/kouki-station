@@ -13,4 +13,12 @@ typedef int esp_err_t;
 #define ESP_ERR_HTTP_BASE 0x7000
 #define ESP_ERR_HTTP_EAGAIN (ESP_ERR_HTTP_BASE + 7)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 const char *esp_err_to_name(esp_err_t err);
+
+#ifdef __cplusplus
+}
+#endif

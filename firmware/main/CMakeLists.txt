@@ -27,7 +27,7 @@ idf_component_register(
         "./app_wake_verify.cpp"
         "./app_tone.cpp"
         "./app_audio_out.cpp"
-        "./app_speech.c"
+        "./app_speech.cpp"
         "./app_ota.cpp"
         "./app_time.cpp"
         "./app_power.cpp"

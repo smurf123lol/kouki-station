@@ -22,10 +22,11 @@ tools/test-host.sh --help   # справка
 | `test_fsm.cpp` | `kouki::voice` FSM: переходы и guard'ы, прерывания, VAD-отсечки, follow-up, парсер ответа, история |
 | `test_platform_behavior.cpp` | `app_time`, `app_power` (дисплей/димминг), `app_history` (кольцо истории), VAD-метрики snapshot |
 | `test_ui_statemachine.cpp` | реальные классы `kouki::ui`: тач-зоны, свайпы, VAD-дуга, карточка ответа, история, настройки, модалки OTA/Setup |
-| `test_speech_host.c` | реальный `app_speech.c`: WAV/стерео, нарезка по фразам, блокировки аудио, abort/поколения, EAGAIN |
+| `test_speech_host.c` | реальный `app_speech.cpp` (t116, C-стенд): WAV/стерео, нарезка по фразам, блокировки аудио, abort/поколения, EAGAIN |
+| `test_speech.cpp` | `kouki::Speech` (t121 П10): границы `wav_parse`/`stereo_expand`, состояние busy/playing/worker, равенство фасада и методов класса |
 | `test_config.cpp` | реальный `app_config.cpp`: `kouki::Config` на моке NVS (ключи 1:1, миграция `wake_mig`, `save`/`erase`, `is_complete`, маскирование секретов) |
 | `support/` | заглушки `esp_err.h`, `esp_log.h`, `esp_app_desc.h`, `esp_board_init.h`, `lvgl_mock.hpp` |
-| `support/speech/` | заглушки esp_http_client/heap/freertos, `sdkconfig.h` и `stubs.c` для стенда озвучки |
+| `support/speech/` | заглушки esp_http_client/heap/freertos, `sdkconfig.h`, `stubs.c` (кодек/HTTP) и `speech_factories.cpp` (фабрика `kouki::audio_out()` без worker'а) для стенда озвучки |
 | `support/cjson/` | cJSON 1.7.19 (MIT) — копия зависимости образа, чтобы стенд не требовал ESP-IDF |
 | `support/config_mock/` | мок NVS, заглушки `nvs.h`/`nvs_flash.h`/`mbedtls`, `sdkconfig.h` и символ вшитого CA для стенда конфигурации |
 

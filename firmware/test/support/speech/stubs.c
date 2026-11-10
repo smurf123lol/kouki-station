@@ -66,7 +66,6 @@ static atomic_int s_audio_lock_depth;
 int g_audio_lock_calls = 0;
 int g_audio_unlock_calls = 0;
 
-static bool s_cfg_silent = false;
 kouki_voice_state_t g_stub_voice_state = KOUKI_VOICE_IDLE;
 
 static uint8_t *s_wav_buf = NULL;
@@ -121,7 +120,6 @@ void fake_speech_reset(void)
     g_audio_unlock_calls = 0;
     atomic_store(&s_audio_lock_depth, 0);
 
-    s_cfg_silent = false;
     g_stub_voice_state = KOUKI_VOICE_IDLE;
     s_src_frames = 0;
     s_src_channels = 1;
@@ -129,6 +127,16 @@ void fake_speech_reset(void)
     s_src_rate = 16000;
     s_wav_len = 0;
     s_wav_pos = 0;
+
+    /*
+     * Адрес и токен сервера стенд задаёт через публичный C-фасад настоящего
+     * kouki::Config: модуль речи читает их из членов класса, а не из моков.
+     * Значения прежние — те, что раньше возвращали моки (URL и токен ровно
+     * такие, какие ждут проверки t116).
+     */
+    kouki_config_set_silent(false);
+    kouki_config_set_url("http://127.0.0.1:5300");
+    kouki_config_set_token("test-token");
 }
 
 void fake_http_set_samples(const int16_t *samples, size_t count_i16)
@@ -194,18 +202,11 @@ static void build_wav(void)
     s_wav_pos = 0;
 }
 
-const char *esp_err_to_name(esp_err_t err)
-{
-    switch (err) {
-    case ESP_OK: return "ESP_OK";
-    case ESP_ERR_NO_MEM: return "ESP_ERR_NO_MEM";
-    case ESP_ERR_INVALID_ARG: return "ESP_ERR_INVALID_ARG";
-    case ESP_ERR_INVALID_STATE: return "ESP_ERR_INVALID_STATE";
-    case ESP_ERR_NOT_SUPPORTED: return "ESP_ERR_NOT_SUPPORTED";
-    case ESP_ERR_INVALID_RESPONSE: return "ESP_ERR_INVALID_RESPONSE";
-    default: return "ESP_FAIL";
-    }
-}
+/*
+ * esp_err_to_name даёт общий мок config_mock/config_stubs.c (он же нужен
+ * настоящему kouki::Config в этом стенде), поэтому своей копии здесь нет:
+ * два определения в одной линковке — ошибка сборки.
+ */
 
 void *heap_caps_malloc(size_t size, uint32_t caps)
 {
@@ -317,10 +318,12 @@ void kouki_wake_mute(int duration_ms)
     g_last_wake_mute_ms = duration_ms;
 }
 
-bool kouki_config_is_silent(void) { return s_cfg_silent; }
-void kouki_config_set_silent(bool silent) { s_cfg_silent = silent; }
-const char *kouki_config_get_srv_url(void) { return "http://127.0.0.1:5300"; }
-const char *kouki_config_get_srv_token(void) { return "test-token"; }
+/*
+ * kouki_config_* здесь больше не подменяются: в стенд линкуется настоящий
+ * kouki::Config (app_config.cpp) — модуль речи берёт адрес/токен из его
+ * членов, поэтому стенд обязан подавать тот же объект, что и образ. Тишина и
+ * сервер задаются через публичный C-фасад конфигурации (см. main()).
+ */
 
 void kouki_ota_mark_server_communicated(void) {}
 

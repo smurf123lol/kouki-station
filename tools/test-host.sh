@@ -147,17 +147,6 @@ run "t115 build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_ui_bin"
 run "t115 run" "$OBJ_DIR/test_ui_bin"
 
-echo "=== t116/t118: speech hostcheck (real app_speech.c + locks + abort gen) ==="
-run "speech build" "$CC" -std=gnu11 -Wall -Wextra -pthread \
-    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
-    "$MAIN/app_speech.c" \
-    "$TEST/test_speech_host.c" \
-    "$SPEECH/stubs.c" \
-    "$OBJ_DIR/cJSON.o" \
-    -pthread \
-    -o "$OBJ_DIR/test_speech_bin"
-run "speech run" "$OBJ_DIR/test_speech_bin"
-
 echo "=== t121: Config (kouki::Config + C-фасад) ==="
 CFG_MOCK="$SUPPORT/config_mock"
 run "config mock nvs" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
@@ -176,6 +165,45 @@ run "config build" "$CXX" -std=c++17 -Wall -Wextra \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -o "$OBJ_DIR/test_config_bin"
 run "config run" "$OBJ_DIR/test_config_bin"
+
+echo "=== t116/t118: speech hostcheck (real kouki::Speech + locks + abort gen) ==="
+# Стенд t116 остаётся C-файлом (test_speech_host.c): моки речи — C (atomic_*),
+# поэтому stubs.c и сам стенд собирает gcc, а линкуются они с C++-модулем речи.
+# kouki::Speech берёт адрес/токен из настоящего kouki::Config, поэтому в
+# линковку входит app_config.cpp с моками config_mock (NVS + mbedtls);
+# kouki::audio_out() подменён support/speech/speech_factories.cpp (объект в
+# статике, без worker'а: звук стенд считает через stubs.c), Tone — настоящий.
+run "speech stubs" "$CC" -std=gnu11 -Wall -Wextra -pthread \
+    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
+    -c "$SPEECH/stubs.c" -o "$OBJ_DIR/speech_stubs.o"
+run "speech test obj" "$CC" -std=gnu11 -Wall -Wextra -pthread \
+    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
+    -c "$TEST/test_speech_host.c" -o "$OBJ_DIR/test_speech_host.o"
+run "speech build" "$CXX" -std=c++17 -Wall -Wextra -pthread \
+    -I"$SPEECH/config" -I"$CFG_MOCK" -I"$SPEECH/stub" -I"$SUPPORT" -I"$CJSON_DIR" -I"$MAIN" \
+    "$MAIN/app_speech.cpp" "$MAIN/app_config.cpp" "$MAIN/app_tone.cpp" \
+    "$SPEECH/speech_factories.cpp" \
+    "$OBJ_DIR/test_speech_host.o" "$OBJ_DIR/speech_stubs.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    "$OBJ_DIR/cJSON.o" \
+    -pthread \
+    -o "$OBJ_DIR/test_speech_bin"
+run "speech run" "$OBJ_DIR/test_speech_bin"
+
+# Тот же модуль и те же моки, но проверки уровня класса: границы wav_parse,
+# вырожденные входы stereo_expand, состояние busy/playing/worker и равенство
+# фасада и static-методов класса.
+run "speech class build" "$CXX" -std=c++17 -Wall -Wextra -pthread \
+    -I"$SPEECH/config" -I"$CFG_MOCK" -I"$SPEECH/stub" -I"$SUPPORT" -I"$CJSON_DIR" -I"$MAIN" \
+    "$TEST/test_speech.cpp" \
+    "$MAIN/app_speech.cpp" "$MAIN/app_config.cpp" "$MAIN/app_tone.cpp" \
+    "$SPEECH/speech_factories.cpp" \
+    "$OBJ_DIR/speech_stubs.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    "$OBJ_DIR/cJSON.o" \
+    -pthread \
+    -o "$OBJ_DIR/test_speech_class_bin"
+run "speech class run" "$OBJ_DIR/test_speech_class_bin"
 
 echo "=== t121: Time, History, Power (классы + C-фасад) ==="
 run "modules build" "$CXX" -std=c++17 -Wall -Wextra \
