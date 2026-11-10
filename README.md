@@ -23,19 +23,21 @@ SQLite и журнал действий.
 
 ## Сборка
 
+Канон — сервер разработки, Linux-скрипты (подробности — `docs/build.md`):
+
 ```bash
-# из каталога firmware/
-idf.py set-target esp32s3
-idf.py menuconfig       # Kouki Station → Wi-Fi, адрес сервера, токен
-idf.py build
-idf.py -p COM3 flash monitor
+# из каталога kouki-station
+tools/build-linux.sh --secret --build-dir _scratch/build-master
+BUILD_DIR=_scratch/build-master tools/flash-linux.sh -p /dev/ttyACM0   # + --monitor для лога
 ```
 
-Через Docker (если ESP-IDF не установлен локально):
+Секреты (Wi-Fi, адрес сервера, токен) больше не зашиваются в образ — они живут в NVS
+(см. ниже); `firmware/sdkconfig.secret` нужен только для флагов сборки вроде wake-word.
 
-```powershell
-powershell -File tools/build.ps1 -IdfTag 5.5.1
-```
+На Windows (вспомогательный путь): `. .\tools\env-idf.ps1` → `.\tools\build-native.ps1 -Secret`
+→ `.\tools\flash-windows.ps1 -Port COM3`; есть и Docker-вариант `tools/build.ps1 -IdfTag 5.5.1`.
+
+Голый `idf.py` тоже работает: `idf.py set-target esp32s3 && idf.py build && idf.py -p /dev/ttyACM0 flash monitor`.
 
 ## Настройка и секреты (NVS)
 
