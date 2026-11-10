@@ -157,4 +157,23 @@ run "speech build" "$CC" -std=gnu11 -Wall -Wextra -pthread \
     -o "$OBJ_DIR/test_speech_bin"
 run "speech run" "$OBJ_DIR/test_speech_bin"
 
+echo "=== t121: Config (kouki::Config + C-фасад) ==="
+CFG_MOCK="$SUPPORT/config_mock"
+run "config mock nvs" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
+    -c "$CFG_MOCK/nvs_mock.c" -o "$OBJ_DIR/nvs_mock.o"
+run "config mock mbedtls" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
+    -c "$CFG_MOCK/mbedtls_crt_mock.c" -o "$OBJ_DIR/mbedtls_mock.o"
+run "config mock stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
+    -c "$CFG_MOCK/config_stubs.c" -o "$OBJ_DIR/config_stubs.o"
+run "config mock root pem" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
+    -c "$CFG_MOCK/root_pem.c" -o "$OBJ_DIR/root_pem.o"
+run "config build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    -DKOUKI_TEST_CERT_PATH="\"$MAIN/certs/kouki-local-root.pem\"" \
+    "$TEST/test_config.cpp" \
+    "$MAIN/app_config.cpp" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -o "$OBJ_DIR/test_config_bin"
+run "config run" "$OBJ_DIR/test_config_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="
