@@ -37,10 +37,15 @@ static int s_status_code = 200;
 static char s_body[1024];
 static esp_err_t s_open_err = ESP_OK;
 static int s_read_calls = 0;
+static size_t s_read_pos = 0;
 static int s_open_calls = 0;
 static int s_close_calls = 0;
 static http_mock_header_t s_headers[HTTP_MOCK_MAX_HEADERS];
 static int s_header_count = 0;
+static char s_written[4096];
+static size_t s_written_len = 0;
+static int s_written_bytes = 0;
+static bool s_write_fail = false;
 
 void http_mock_reset(void)
 {
@@ -55,10 +60,15 @@ void http_mock_reset(void)
     s_body[0] = '\0';
     s_open_err = ESP_OK;
     s_read_calls = 0;
+    s_read_pos = 0;
     s_open_calls = 0;
     s_close_calls = 0;
     memset(s_headers, 0, sizeof(s_headers));
     s_header_count = 0;
+    memset(s_written, 0, sizeof(s_written));
+    s_written_len = 0;
+    s_written_bytes = 0;
+    s_write_fail = false;
 }
 
 const esp_http_client_config_t *http_mock_last_config(void)
@@ -154,6 +164,7 @@ esp_err_t esp_http_client_open(esp_http_client_handle_t client, int write_len)
     (void)client;
     (void)write_len;
     s_open_calls++;
+    s_read_pos = 0;
     return s_open_err;
 }
 
@@ -177,11 +188,13 @@ int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len)
         return -1;
     }
     const size_t body_len = strlen(s_body);
-    if (body_len == 0) {
+    if (s_read_pos >= body_len) {
         return 0;
     }
-    const size_t n = (body_len < (size_t)len) ? body_len : (size_t)len;
-    memcpy(buffer, s_body, n);
+    const size_t left = body_len - s_read_pos;
+    const size_t n = (left < (size_t)len) ? left : (size_t)len;
+    memcpy(buffer, s_body + s_read_pos, n);
+    s_read_pos += n;
     return (int)n;
 }
 
@@ -192,9 +205,43 @@ esp_err_t esp_http_client_close(esp_http_client_handle_t client)
     return ESP_OK;
 }
 
+int esp_http_client_write(esp_http_client_handle_t client, const char *buffer, int len)
+{
+    (void)client;
+    if (s_write_fail) {
+        return -1;
+    }
+    if (buffer == NULL || len <= 0) {
+        return -1;
+    }
+    size_t room = sizeof(s_written) - s_written_len;
+    size_t n = ((size_t)len < room) ? (size_t)len : room;
+    memcpy(s_written + s_written_len, buffer, n);
+    s_written_len += n;
+    s_written_bytes += len;
+    return len;
+}
+
+int http_mock_written_bytes(void)
+{
+    return s_written_bytes;
+}
+
+const char *http_mock_written_body(void)
+{
+    return (s_written_len > 0) ? s_written : NULL;
+}
+
+void http_mock_fail_write(int ret)
+{
+    /* ret <= 0 — заказать сбой записи; ret > 0 — снова писать нормально. */
+    s_write_fail = (ret <= 0);
+}
+
 void http_mock_set_response(int status_code, const char *body)
 {
     s_status_code = status_code;
+    s_read_pos = 0;
     if (body != NULL) {
         snprintf(s_body, sizeof(s_body), "%s", body);
     } else {

@@ -294,4 +294,23 @@ run "ota build" "$CXX" -std=c++17 -Wall -Wextra \
     -o "$OBJ_DIR/test_ota_bin"
 run "ota run" "$OBJ_DIR/test_ota_bin"
 
+echo "=== t121: Wake + WakeVerify (kouki::Wake/kouki::WakeVerify, мок esp-dl rfft) ==="
+WAKE="$SUPPORT/wake"
+# esp-dl rfft заменён наивным DFT с тем же форматом выхода, время и heap_caps —
+# моками: детектор на стенде — настоящая модель microWakeWord, гоняемая по
+# реальным фикстурам sim/fixtures/mic/*.wav. HTTP-клиент ASR-проверки — общий
+# мок http_mock (добавлен только esp_http_client_write для POST-тела).
+run "wake mock" "$CC" -std=gnu11 -Wall -Wextra -I"$WAKE" -I"$CFG_MOCK" -I"$SUPPORT" \
+    -c "$WAKE/wake_mock.c" -o "$OBJ_DIR/wake_mock.o"
+run "wake build" "$CXX" -std=c++17 -Wall -Wextra \
+    -I"$WAKE" -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    "$TEST/test_wake.cpp" \
+    "$MAIN/app_wake.cpp" "$MAIN/app_wake_verify.cpp" \
+    "$MAIN/app_config.cpp" "$MAIN/app_http.cpp" \
+    "$OBJ_DIR/wake_mock.o" "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    -lm \
+    -o "$OBJ_DIR/test_wake_bin"
+run "wake run" "$OBJ_DIR/test_wake_bin"
+
 echo "=== ALL HOSTCHECKS PASSED ==="

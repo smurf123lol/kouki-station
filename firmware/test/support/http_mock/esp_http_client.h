@@ -73,6 +73,14 @@ int esp_http_client_get_status_code(esp_http_client_handle_t client);
 int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len);
 esp_err_t esp_http_client_close(esp_http_client_handle_t client);
 
+/* --- Поверхность модуля wake_verify (T121 П9): POST /api/transcribe ---- */
+
+/**
+ * Отправка тела запроса. Мок складывает байты в свой буфер (до 4096), чтобы
+ * стенд мог проверить WAV-заголовок и длину; возвращает, сколько «отправлено».
+ */
+int esp_http_client_write(esp_http_client_handle_t client, const char *buffer, int len);
+
 /* --- Управление моком из стенда --------------------------------------- */
 
 /** Сброс: забыть последнюю конфигурацию, счётчики и заказанную TLS-ошибку. */
@@ -113,6 +121,17 @@ int http_mock_read_calls(void);
 /** Счётчики открытия/закрытия: стенд видит, что клиент закрыли после ответа. */
 int http_mock_open_calls(void);
 int http_mock_close_calls(void);
+
+/* --- Управление POST-ом (модуль wake_verify, T121 П9) ------------------ */
+
+/** Сколько байт тела отправлено через esp_http_client_write (всего). */
+int http_mock_written_bytes(void);
+
+/** Тело, которое отправил код (NULL, если ничего не писали). */
+const char *http_mock_written_body(void);
+
+/** Заказать ошибку следующей esp_http_client_write (0 или отрицательное — сбой). */
+void http_mock_fail_write(int ret);
 
 #ifdef __cplusplus
 }
