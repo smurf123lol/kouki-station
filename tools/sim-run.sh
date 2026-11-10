@@ -19,6 +19,8 @@
 #                                (например `--realtime`); работают и при --all;
 #   * тело скрипта эмулятора (формат _scratch/esp32sim/docs/cli.md, «Action
 #     scripts»): `3.0 touch 180 180 1`, `5.0 serial state`, `6.0 stop`;
+#     относительные пути в `i2s_wav` считаются от корня репозитория (а не от
+#     каталога запуска), отсутствующий файл — ошибка стенда, код 3;
 #   * блок `expect:` — по строке на проверку:
 #       `+ шаблон` — grep -F обязан найти шаблон в run.log;
 #       `- шаблон` — обязан НЕ найтись (паника, abort, assert).
@@ -248,6 +250,61 @@ if [ "$IN_EXPECT" -eq 1 ]; then
         EXPECT_MINUS[$i]="${EXPECT_MINUS[$i]# }"
     done
 fi
+
+# --- Фикстуры в теле сценария ----------------------------------------------
+# Тело сценария лежит в git, поэтому пути в нём относительные (например
+# `sim/fixtures/mic/ey_gin.wav`). Эмулятор резолвит их от своего cwd, а сам
+# sim-run.sh зовут из любого каталога — отсюда ложный FAIL «эмулятор завершился
+# с кодом 2 … No such file or directory», хотя файл на месте (task-25). Поэтому
+# каждый путь из `i2s_wav` раскрывается здесь в абсолютный: сначала от корня
+# репозитория (так его подразумевают авторы сценариев), затем от каталога
+# запуска. Отсутствующий файл — неподготовленный стенд (код 3), а не дефект
+# прошивки: иначе ошибка стенда маскируется под FAIL сценария.
+SCRIPT_RESOLVED="$SCRIPT_TMP.resolved"
+FIXTURE_MISSING=0
+: > "$SCRIPT_RESOLVED"
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        *i2s_wav*|*i2s-wav*) ;;
+        *) printf '%s\n' "$line" >> "$SCRIPT_RESOLVED"; continue ;;
+    esac
+    read -r _when _action _port _file _rest <<< "$line" || true
+    case "${_action:-}" in
+        i2s_wav|i2s-wav) ;;
+        *) printf '%s\n' "$line" >> "$SCRIPT_RESOLVED"; continue ;;
+    esac
+    if [ -z "${_file:-}" ]; then
+        printf '%s\n' "$line" >> "$SCRIPT_RESOLVED"; continue
+    fi
+    _src=""
+    case "$_file" in
+        /*) [ -f "$_file" ] && _src="$_file" ;;
+        *)
+            if [ -f "$SIM_REPO_ROOT/$_file" ]; then
+                _src="$SIM_REPO_ROOT/$_file"
+            elif [ -f "$_file" ]; then
+                _src="$(cd "$(dirname "$_file")" && pwd)/$(basename "$_file")"
+            fi ;;
+    esac
+    if [ -z "$_src" ]; then
+        echo "Ошибка: нет файла фикстуры «$_file» (искали $SIM_REPO_ROOT/$_file)" >&2
+        echo "  Сценарий: $SCENARIO_FILE" >&2
+        echo "  Это неподготовленный стенд (код 3), а не FAIL прошивки." >&2
+        # verdict.txt пишем и здесь: под --all сводка берёт причину из него, и
+        # «FAIL: нет verdict.txt» скрыла бы настоящую причину.
+        printf 'ОШИБКА СТЕНДА: нет файла фикстуры «%s» (искали %s/%s)\n' \
+            "$_file" "$SIM_REPO_ROOT" "$_file" > "$VERDICT"
+        FIXTURE_MISSING=1
+        printf '%s\n' "$line" >> "$SCRIPT_RESOLVED"
+        continue
+    fi
+    printf '%s\n' "${line%%"$_file"*}${_src}${line#*"$_file"}" >> "$SCRIPT_RESOLVED"
+done < "$SCRIPT_TMP"
+if [ "$FIXTURE_MISSING" -ne 0 ]; then
+    rm -f "$SCRIPT_RESOLVED"
+    exit 3
+fi
+mv "$SCRIPT_RESOLVED" "$SCRIPT_TMP"
 
 # --- NVS -------------------------------------------------------------------
 # Имя из заголовка сценария (`nvs: wake`) выбирает CSV из sim/nvs/; иначе —
