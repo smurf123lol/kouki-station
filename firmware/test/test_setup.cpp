@@ -12,6 +12,7 @@
 #include <string>
 
 #include "app_config.h"
+#include "app_history.h"
 #include "app_setup.h"
 #include "app_setup.hpp"
 #include "app_voice.h"

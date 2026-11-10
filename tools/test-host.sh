@@ -343,12 +343,22 @@ run "wake run" "$OBJ_DIR/test_wake_bin"
 
 echo "=== t121: Setup (kouki::Setup, моки httpd/SoftAP/USB-Serial-JTAG) ==="
 SETUP="$SUPPORT/setup"
-run "setup mock" "$CC" -std=gnu11 -Wall -Wextra -I"$SETUP" -I"$WIFI" -I"$SUPPORT" \
+# Порядок -I был ловушкой: app_setup.cpp подтягивает wifi/esp_log.h -> wifi/
+# sdkconfig.h (квоты include ищут файл рядом с заголовком), а test_setup.cpp не
+# подтягивал sdkconfig.h вовсе. В итоге оба TU стенда видели РАЗНЫЕ наборы
+# CONFIG_KOUKI_* (или ни одного), и блок test_seed_history/test_mock_done из 4
+# проверок был мёртвым — 158 проверок вместо 162.
+#
+# Теперь конфиг задаётся один: setup/sdkconfig.h подключается через -include
+# (до любого #include из исходника), а гвард KOUKI_TEST_SDKCONFIG_SEEN в
+# заглушках не даёт wifi/sdkconfig.h переопределить его позже.
+SETUP_CFG=(-include "$SETUP/sdkconfig.h")
+run "setup mock" "$CC" -std=gnu11 -Wall -Wextra "${SETUP_CFG[@]}" -I"$SETUP" -I"$WIFI" -I"$SUPPORT" \
     -c "$SETUP/setup_mock.c" -o "$OBJ_DIR/setup_mock.o"
-run "setup stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$SETUP" -I"$WIFI" -I"$SUPPORT" -I"$MAIN" \
+run "setup stubs" "$CC" -std=gnu11 -Wall -Wextra "${SETUP_CFG[@]}" -I"$SETUP" -I"$WIFI" -I"$SUPPORT" -I"$MAIN" \
     -c "$SETUP/setup_stubs.c" -o "$OBJ_DIR/setup_stubs.o"
 run "setup build" "$CXX" -std=c++17 -Wall -Wextra \
-    -I"$SETUP" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    "${SETUP_CFG[@]}" -I"$SETUP" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
     "$TEST/test_setup.cpp" \
     "$MAIN/app_setup.cpp" "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" "$MAIN/app_time.cpp" \
     "$OBJ_DIR/setup_mock.o" "$OBJ_DIR/setup_stubs.o" \
