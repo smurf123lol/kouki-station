@@ -75,11 +75,95 @@ int count_occurrences(const std::string &haystack, const std::string &needle)
 }
 
 /**
+ * Вырезает строчные и блочные комментарии, сохраняя переводы строк.
+ *
+ * Нужно для инварианта I2S: сам запрет описан словами в шапках app_voice.hpp и
+ * app_wake.hpp («не зовёт esp_get_feed_data/esp_codec_dev_read»), и без этой
+ * чистки сканирование заголовков дало бы ложное срабатывание на собственном
+ * комментарии. Тело строковых литералов сохраняется как есть.
+ */
+std::string strip_comments(const std::string &src)
+{
+    std::string out;
+    out.reserve(src.size());
+    bool line = false;
+    bool block = false;
+    bool in_str = false;
+    for (size_t i = 0; i < src.size(); ++i) {
+        const char c = src[i];
+        const char next = (i + 1 < src.size()) ? src[i + 1] : '\0';
+        if (line) {
+            if (c == '\n') {
+                line = false;
+                out.push_back(c);
+            }
+            continue;
+        }
+        if (block) {
+            if (c == '*' && next == '/') {
+                block = false;
+                ++i;
+            } else if (c == '\n') {
+                out.push_back(c);
+            }
+            continue;
+        }
+        if (in_str) {
+            out.push_back(c);
+            if (c == '\\' && i + 1 < src.size()) {
+                out.push_back(src[++i]);
+            } else if (c == '"') {
+                in_str = false;
+            }
+            continue;
+        }
+        if (c == '/' && next == '/') {
+            line = true;
+            ++i;
+            continue;
+        }
+        if (c == '/' && next == '*') {
+            block = true;
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_str = true;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+/**
+ * Каталоги firmware/main, где чтение микрофона разрешено.
+ *
+ * drivers/ — это board-код: esp_board_init()/esp_get_feed_data() и кодек живут
+ * там по устройству (firmware/main/drivers/README.md). test/ — не прошивка.
+ */
+bool is_mic_reader_exempt(const std::filesystem::path &path, const std::filesystem::path &main_dir)
+{
+    const std::filesystem::path rel = std::filesystem::relative(path, main_dir);
+    for (const auto &part : rel) {
+        const std::string name = part.string();
+        if (name == "drivers" || name == "test") {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * ИНВАРИАНТ I2S (AGENTS.md п.1): микрофон читает только голосовое ядро.
  *
  * Проверка идёт по исходникам, а не по рантайму: на хосте задача записи не
  * поднимается, поэтому счётчик вызовов стаба ничего не докажет. Зато по коду
  * видно, что второй читатель не появился ни в одном модуле.
+ *
+ * Сканируются .c/.cpp И .h/.hpp (находка ревью П12: читатель, спрятанный в
+ * inline-функции заголовка, старый тест не видел), комментарии вырезаются.
+ * Проверяются ВСЕ три способа чтения: esp_get_feed_data (board-API),
+ * esp_codec_dev_read (кодек напрямую) и i2s_channel_read (канал IDF).
  */
 void test_i2s_owner_invariant()
 {
@@ -94,33 +178,60 @@ void test_i2s_owner_invariant()
             continue;
         }
         const std::string ext = entry.path().extension().string();
-        if (ext == ".cpp" || ext == ".c") {
+        if (ext == ".cpp" || ext == ".c" || ext == ".hpp" || ext == ".h") {
             sources.push_back(entry.path());
         }
     }
     CHECK(!sources.empty(), "исходники firmware/main найдены");
 
+    // Все способы прочитать микрофон, которые существуют в IDF. Если появится
+    // четвёртый (например, i2s_channel_read в обход board-API), его надо
+    // добавить сюда же — иначе инвариант снова станет частичным.
+    const std::vector<std::string> readers = {
+        "esp_get_feed_data(",
+        "esp_codec_dev_read(",
+        "i2s_channel_read(",
+    };
+
     const std::string voice_src = read_file(main_dir / "app_voice.cpp");
     CHECK(!voice_src.empty(), "app_voice.cpp читается");
     CHECK(count_occurrences(voice_src, "esp_get_feed_data(") == 2,
           "в app_voice.cpp ровно два чтения микрофона (запись + диагностика)");
+    CHECK(count_occurrences(voice_src, "esp_codec_dev_read(") == 0,
+          "голосовое ядро не читает кодек в обход board-API");
+    CHECK(count_occurrences(voice_src, "i2s_channel_read(") == 0,
+          "голосовое ядро не читает I2S-канал напрямую");
 
     const std::string wake_src = read_file(main_dir / "app_wake.cpp");
     CHECK(!wake_src.empty(), "app_wake.cpp читается");
-    CHECK(count_occurrences(wake_src, "esp_get_feed_data(") == 0,
-          "детектор wake не читает микрофон сам");
-    CHECK(count_occurrences(wake_src, "esp_codec_dev_read") == 0,
-          "детектор wake не читает кодек напрямую");
+    for (const auto &reader : readers) {
+        CHECK(count_occurrences(wake_src, reader) == 0,
+              "детектор wake не читает микрофон сам (ни одним из трёх способов)");
+    }
 
-    // Ни в одном другом файле прошивки чтения микрофона быть не должно.
+    // Ни в одном другом файле прошивки (включая заголовки) чтения микрофона
+    // быть не должно. По одной проверке на файл: нарушение сразу называет и
+    // файл, и все способы чтения, которые в нём встретились.
+    int scanned = 0;
     for (const auto &path : sources) {
-        if (path.filename() == "app_voice.cpp") {
+        if (path.filename() == "app_voice.cpp" || is_mic_reader_exempt(path, main_dir)) {
             continue;
         }
-        const std::string src = read_file(path);
-        CHECK(count_occurrences(src, "esp_get_feed_data(") == 0,
-              "чтение микрофона только в app_voice.cpp");
+        scanned++;
+        const std::string code = strip_comments(read_file(path));
+        std::string found;
+        for (const auto &reader : readers) {
+            const int n = count_occurrences(code, reader);
+            if (n > 0) {
+                found += " " + reader + " x" + std::to_string(n);
+            }
+        }
+        const std::string rel = std::filesystem::relative(path, main_dir).string();
+        const std::string msg = "чтение микрофона только в app_voice.cpp, а в " + rel + " есть:" +
+                                (found.empty() ? std::string(" нет") : found);
+        CHECK(found.empty(), msg.c_str());
     }
+    CHECK(scanned > 0, "файлы для проверки инварианта найдены");
 
     // Детектор получает PCM от FSM: IdleState отдаёт чанк из record_task.
     const std::string idle_src = read_file(main_dir / "fsm/states/idle_state.cpp");
