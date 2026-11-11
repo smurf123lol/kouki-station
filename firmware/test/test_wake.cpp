@@ -148,9 +148,21 @@ std::vector<int16_t> make_quiet(size_t samples)
     return pcm;
 }
 
+/** Прямоугольный сигнал заданной амплитуды: пик окна равен `peak`. */
+std::vector<int16_t> make_loud(size_t samples, int16_t peak)
+{
+    std::vector<int16_t> pcm(samples);
+    for (size_t i = 0; i < samples; i++) {
+        pcm[i] = (i % 2 == 0) ? peak : static_cast<int16_t>(-peak);
+    }
+    return pcm;
+}
+
 }  // namespace
 
 // ------------------------------------------------- инициализация детектора ---
+
+
 
 static void test_init_disabled()
 {
@@ -381,6 +393,136 @@ static void test_ready_follows_config()
     CHECK(kouki_wake_is_ready(), "готовность вернулась");
 }
 
+/*
+ * Пункт 22 ревью П9 (мутант m04): «два хита подряд», а не «один».
+ *
+ * Зонд по реальным фикстурам показал окно, где поведение различается: запись
+ * «эй гин», обрезанная до 500 мс и добитая тишиной, на пороге 10..20 даёт у
+ * кода ноль хитов (модель срабатывает ОДИН раз, а нужно два подряд), а у
+ * мутанта `>= 1` — ровно один хит. На более длинных обрезках оба варианта
+ * совпадают, поэтому кейс привязан именно к 500 мс.
+ */
+static void test_two_hits_required()
+{
+    std::printf("[TEST] 16. хит только после двух инференсов подряд (m04)...\n");
+    const std::vector<int16_t> full = load_wav(repo_root() + "/sim/fixtures/mic/ey_gin.wav");
+
+    for (uint8_t th : {(uint8_t)10, (uint8_t)20}) {
+        reset_all(true, th);
+        CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
+        wake_mock_advance_us(5 * 1000 * 1000);
+        kouki_wake_reset();
+
+        const size_t n = 16u * 500u;  // 500 мс: ровно одно срабатывание модели
+        std::vector<int16_t> part(full.begin(), full.begin() + (long)n);
+        const std::vector<int16_t> silence(32000, 0);
+        part.insert(part.end(), silence.begin(), silence.end());
+
+        CHECK(feed_chunks(part) == 0,
+              "одно срабатывание модели хитом не считается (нужно два подряд)");
+    }
+
+    /* Полная запись — хит есть: требование «два подряд» не блокирует детектор. */
+    reset_all(true, 10);
+    CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
+    wake_mock_advance_us(5 * 1000 * 1000);
+    kouki_wake_reset();
+    CHECK(feed_chunks(full) == 1, "на полной записи ровно один хит");
+}
+
+/*
+ * Пункт 23 ревью П9 (мутант m08): окно mute считается в миллисекундах,
+ * а esp_timer_get_time() отдаёт микросекунды.
+ *
+ * Мутант записывает в m_mute_until_us «текущее время + duration_ms» без
+ * множителя 1000, то есть глушит на 1 мс вместо 1 с. Проверка через 5 мс после
+ * mute(): у оригинала FFT ещё не считается, у мутанта — уже считается.
+ */
+static void test_mute_window_units()
+{
+    std::printf("[TEST] 17. окно mute в мс, а не в мкс (m08)...\n");
+    reset_all();
+    CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
+    wake_mock_advance_us(5 * 1000 * 1000);
+    kouki_wake_reset();
+
+    kouki_wake_mute(1000);
+    const int runs_before = wake_mock_rfft_runs();
+    wake_mock_advance_us(5000);  /* 5 мс: mutate-версия уже «отпустила» */
+    const std::vector<int16_t> pcm = make_quiet(2048);
+    kouki_wake_feed(pcm.data(), static_cast<int>(pcm.size()));
+    CHECK(wake_mock_rfft_runs() == runs_before,
+          "через 5 мс из 1000 мс окно mute ещё не закрыто");
+
+    /* И закрывается по-настоящему: через 1 с FFT снова считает. */
+    wake_mock_advance_us(1000 * 1000);
+    kouki_wake_feed(pcm.data(), static_cast<int>(pcm.size()));
+    CHECK(wake_mock_rfft_runs() > runs_before, "после 1 с окно mute закрыто");
+}
+
+/*
+ * Пункт 24 ревью П9 (мутанты m10/m34): энергетический порог 500 по пику окна
+ * и оба размера WAV-заголовка (RIFF и data).
+ *
+ * Порог проверяется на реальной записи «эй гин», масштабированной по пику:
+ * с пиком 400 (ниже 500) детектор молчит даже на пороге вероятности 10, с
+ * пиком 520 — срабатывает. Мутант m10 со снятым фильтром даёт по два хита в
+ * обоих случаях, поэтому сравнение различает ветки.
+ */
+static void test_energy_threshold_and_wav_sizes()
+{
+    std::printf("[TEST] 18. порог энергии 500 по пику и оба размера WAV...\n");
+    const std::vector<int16_t> full = load_wav(repo_root() + "/sim/fixtures/mic/ey_gin.wav");
+
+    int source_peak = 0;
+    for (int16_t v : full) {
+        const int a = v < 0 ? -v : v;
+        if (a > source_peak) {
+            source_peak = a;
+        }
+    }
+    CHECK(source_peak > 0, "в фикстуре есть ненулевые сэмплы");
+
+    auto scaled_to = [&](int peak) {
+        std::vector<int16_t> out = full;
+        for (int16_t &v : out) {
+            v = static_cast<int16_t>((long)v * peak / source_peak);
+        }
+        return out;
+    };
+
+    // Пик 400 < 500: фильтр отсекает окно ДО инференса, хита нет даже при
+    // пороге вероятности 10 (мутант m10 здесь даёт два хита).
+    reset_all(true, 10);
+    CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
+    wake_mock_advance_us(5 * 1000 * 1000);
+    kouki_wake_reset();
+    CHECK(feed_chunks(scaled_to(400)) == 0,
+          "пик окна 400 (ниже 500) отсекается энергетическим фильтром");
+
+    // Пик 520 > 500: фильтр пропускает, детектор срабатывает.
+    reset_all(true, 10);
+    CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
+    wake_mock_advance_us(5 * 1000 * 1000);
+    kouki_wake_reset();
+    CHECK(feed_chunks(scaled_to(520)) > 0, "пик окна 520 проходит фильтр и ловится");
+
+    // WAV-заголовок: RIFF-размер = 36 + data, data-размер = 2 * N.
+    reset_all();
+    const std::vector<int16_t> pcm(1234, 1000);
+    http_mock_set_response(200, "{\"transcript\": \"эй гин\"}");
+    CHECK(kouki_wake_verify_start(pcm.data(), static_cast<int>(pcm.size())) == ESP_OK, "запуск -> ESP_OK");
+    CHECK(wake_mock_run_task(), "задача прогнана");
+    const char *body = http_mock_written_body();
+    CHECK(body != nullptr, "тело записано");
+    const unsigned char *b = reinterpret_cast<const unsigned char *>(body);
+    const uint32_t data_bytes = 2u * 1234u;
+    const uint32_t data_field = (uint32_t)b[40] | ((uint32_t)b[41] << 8);
+    CHECK(data_field == data_bytes, "data-размер = 2 * N");
+    const uint32_t riff_field = (uint32_t)b[4] | ((uint32_t)b[5] << 8);
+    CHECK(riff_field == 36u + data_bytes, "RIFF-размер = 36 + data (мутант m34 его портит)");
+}
+
 // --------------------------------------------------- ASR-подтверждение ------
 
 static void test_matches()
@@ -583,6 +725,9 @@ int main()
     test_mute_and_reset_facade();
     test_preroll_ring();
     test_energy_filter();
+    test_two_hits_required();
+    test_mute_window_units();
+    test_energy_threshold_and_wav_sizes();
     test_fixture_wake_word();
     test_fixture_threshold();
     test_ready_follows_config();
