@@ -14,6 +14,15 @@
 #include <thread>
 #include <vector>
 
+/* Учёт кучи: под ASAN glibc-арены не отражают реальные аллокации, поэтому
+ * при сборке с санитайзером берём счётчик самого ASAN (слабый символ: без
+ * -fsanitize=address символ равен NULL и используется mallinfo2). */
+#if defined(__SANITIZE_ADDRESS__)
+#include <stddef.h>
+extern "C" size_t __sanitizer_get_current_allocated_bytes(void) __attribute__((weak));
+#endif
+/* malloc.h нужен и под ASAN: запасной путь через mallinfo2 остаётся в коде
+ * (санитайзер может быть собран без счётчика аллокаций). */
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
@@ -281,9 +290,14 @@ static void test_enqueue_guards()
  */
 static long heap_in_use()
 {
+#if defined(__SANITIZE_ADDRESS__)
+    if (__sanitizer_get_current_allocated_bytes != nullptr) {
+        return (long)__sanitizer_get_current_allocated_bytes();
+    }
+#endif
 #if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
     struct mallinfo2 mi = mallinfo2();
-    return (long)mi.uordblks;
+    return (long)mi.uordblks + (long)mi.hblkhd;
 #else
     return 0;
 #endif
