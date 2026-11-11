@@ -225,8 +225,44 @@ void test_init_order_matches_master()
                    "итоговый лог станции");
 
     /* Отказы возвращаются первым esp_err_t, а не проглатываются: station_init
-     * вызывается из main через ESP_ERROR_CHECK. */
-    expect_present(body, "return err;", "ошибка шага возвращается наружу");
+     * вызывается из main через ESP_ERROR_CHECK.
+     *
+     * Пункт 41 ревью П13: проверка «где-то есть return err» проходила и на
+     * мутанте, который проглатывал отказ ОДНОГО шага. Теперь для каждого
+     * шага с проверкой ошибки требуется своя пара «if (err != ESP_OK)
+     * return err» сразу за вызовом, до следующего шага. */
+    struct Checked {
+        const char *call;
+        const char *next;
+    };
+    const Checked checked[] = {
+        {"esp_board_init(16000, 2, 16)", "audio_out().init()"},
+        {"audio_out().init()", "player_init()"},
+        {"voice_engine().init(nullptr, nullptr)", "history().init()"},
+        {"ota().init()", "config().is_complete()"},
+    };
+    for (const Checked &c : checked) {
+        const size_t at = body.find(c.call);
+        CHECK(at != std::string::npos, "шаг найден в теле station_init");
+        const size_t next_at = body.find(c.next, at + 1);
+        CHECK(next_at != std::string::npos, "следующий шаг найден после проверяемого");
+        const std::string between = body.substr(at, next_at - at);
+        char msg[512];
+        std::snprintf(msg, sizeof(msg), "после «%s» стоит if (err != ESP_OK)", c.call);
+        CHECK(between.find("if (err != ESP_OK)") != std::string::npos, msg);
+        std::snprintf(msg, sizeof(msg), "после «%s» отказ возвращается наружу", c.call);
+        CHECK(between.find("return err;") != std::string::npos, msg);
+    }
+    /* И ровно столько возвратов, сколько проверяемых шагов: лишний return err
+     * означал бы шаг, чей отказ не проверяется, а проглоченный ошибкой. */
+    int returns = 0;
+    for (size_t pos = body.find("return err;"); pos != std::string::npos;
+         pos = body.find("return err;", pos + 1)) {
+        returns++;
+    }
+    CHECK(returns == 4, "в station_init ровно 4 возврата ошибки — по одному на проверяемый шаг");
+    /* Финальный успех возвращается явно, а не случайным значением err. */
+    expect_present(body, "return ESP_OK;", "успешное завершение станции");
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +288,21 @@ void test_station_wiring()
         CHECK(p > prev, msg);
         prev = p;
     }
+
+    /*
+     * Пункт 42 ревью П13: раньше вызов station() внутри station_wire() не был
+     * мишенью ни одной проверки — мутант «убрать вызов» выживал. На хосте
+     * эффект вызова (создание function-local static) не наблюдаем вообще:
+     * стенд читает исходники, а не линкует образ. Поэтому проверяем
+     * единственное, что видно статически, — сам вызов и его место ДО return;
+     * в комментарии честно сказано, что это проверка текста, а не поведения.
+     */
+    const std::string wire_body = body_of(src, "esp_err_t station_wire()");
+    const int p_station_call = expect_present(wire_body, "(void)station();",
+                                              "station_wire() создаёт объекты графа");
+    const int p_wire_ok = expect_present(wire_body, "return ESP_OK;",
+                                         "station_wire() сообщает успех");
+    CHECK(p_station_call < p_wire_ok, "station_wire(): объекты создаются до возврата успеха");
 
     /* Зависимость раньше зависимого — иначе конструктор получит объект,
      * который ещё не создан (в C++ это UB, а не ошибка компиляции). */
@@ -364,27 +415,68 @@ void test_c_facade()
           "main.c подключает C-заголовок kouki_api.h");
 }
 
+// Счётчик вхождений подстроки: нужен, чтобы список проверяемых логов не
+// отставал от исходника (п.40 ревью П13).
+static int count_occurrences(const std::string &haystack, const char *needle)
+{
+    int n = 0;
+    const size_t len = std::strlen(needle);
+    for (size_t pos = haystack.find(needle); pos != std::string::npos; pos = haystack.find(needle, pos + len)) {
+        n++;
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // Логи точки входа: тексты остались прежними (их ждут sim-сценарии).
 // ---------------------------------------------------------------------------
 void test_log_texts_preserved()
 {
-    const std::string src = strip_comments(read_file(main_dir() + "/kouki_api.cpp"));
-    const char *texts[] = {
-        "усилитель динамика включён (GPIO %d)",
-        "не удалось поднять усилитель (GPIO %d): %s",
-        "громкость выхода: %d %%",
-        "кодек не принял громкость %d: %s",
-        "сеть готова, сервер %s",
-        "без сети: кнопка будет отвечать ошибкой отправки",
-        "станция готова: %d с записи на одну фразу",
-        "конфигурация готова, подключение к сети",
+    /*
+     * Пункт 40 ревью П13: сверяются ВСЕ 14 format-строк ESP_LOG точки входа,
+     * а не 8 из kouki_api.cpp. Часть текстов видна в консоли станции и в
+     * sim-сценариях, поэтому подмена строки — регрессия даже без смены логики.
+     * Если в файлах появится новый ESP_LOG, счётчик ниже это заметит: список
+     * обязан пополняться вместе с кодом.
+     */
+    struct Entry {
+        const char *file;
+        const char *text;
     };
-    for (const char *t : texts) {
+    const Entry entries[] = {
+        // kouki_api.cpp
+        {"kouki_api.cpp", "усилитель динамика включён (GPIO %d)"},
+        {"kouki_api.cpp", "не удалось поднять усилитель (GPIO %d): %s"},
+        {"kouki_api.cpp", "громкость выхода: %d %%" },
+        {"kouki_api.cpp", "кодек не принял громкость %d: %s"},
+        {"kouki_api.cpp", "сеть готова, сервер %s"},
+        {"kouki_api.cpp", "тестовый режим: пауза %d с, запись %d с, отправлю как %s"},
+        {"kouki_api.cpp", "тестовый режим: запись не началась"},
+        {"kouki_api.cpp", "без сети: кнопка будет отвечать ошибкой отправки"},
+        {"kouki_api.cpp", "конфигурация не настроена: переход в режим SoftAP настройки"},
+        {"kouki_api.cpp", "конфигурация готова, подключение к сети"},
+        {"kouki_api.cpp", "не удалось создать задачу Wi-Fi"},
+        {"kouki_api.cpp", "станция готова: %d с записи на одну фразу"},
+        // main.c — BOOT-логи остались в C-точке входа.
+        {"main.c", "кнопка BOOT нажата при старте, удерживайте 10 с для сброса…"},
+        {"main.c", "кнопка удерживалась 10 с: сброс настроек NVS!"},
+    };
+
+    const std::string api = strip_comments(read_file(main_dir() + "/kouki_api.cpp"));
+    const std::string main_src = strip_comments(read_file(main_dir() + "/main.c"));
+
+    for (const Entry &e : entries) {
+        const std::string &src = std::strcmp(e.file, "main.c") == 0 ? main_src : api;
         char msg[512];
-        std::snprintf(msg, sizeof(msg), "лог точки входа сохранён: %s", t);
-        CHECK(src.find(t) != std::string::npos, msg);
+        std::snprintf(msg, sizeof(msg), "лог %s сохранён: %s", e.file, e.text);
+        CHECK(src.find(e.text) != std::string::npos, msg);
     }
+
+    /* Ни один ESP_LOG не остался непокрытым: число вызовов в исходниках
+     * должно совпадать с длиной списка (иначе новый лог прошёл бы мимо). */
+    const int expected = static_cast<int>(sizeof(entries) / sizeof(entries[0]));
+    CHECK(count_occurrences(api, "ESP_LOG") + count_occurrences(main_src, "ESP_LOG") == expected,
+          "все ESP_LOG точки входа сверены по тексту (14 format-строк)");
 }
 
 }  // namespace
