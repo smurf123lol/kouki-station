@@ -76,16 +76,34 @@ Wake-word по умолчанию выключен: станция работа�
 
 ## Устройство прошивки
 
+Модули — классы в `namespace kouki` (`app_*.hpp`) с тонким C-фасадом
+(`app_*.h`) для `main.c` и UI: фасад отдаёт один статический экземпляр, копий
+состояния нет. Сборка объектного графа и порядок инициализации — в
+`main/kouki_api.cpp`.
+
 | Файл | Что делает |
 | --- | --- |
-| `main/main.c` | порядок инициализации: NVS → EXIO → аудио-борда → LCD → LVGL → запись → UI |
-| `main/app_voice.c` | запись WAV в PSRAM, отправка на `/api/voice`, разбор ответа |
-| `main/app_tone.c` | процедурный синтез и воспроизведение коротких сигналов (PCM 16 кГц в RAM) |
-| `main/app_speech.c` | речь ответа: `POST /api/speech`, разбор WAV, стереопара L=R |
-| `main/app_wifi.c` | Wi-Fi в режиме станции с переподключением |
-| `main/app_ui.c` | экран: кнопка, статус, текст ответа (LVGL 8.3) |
+| `main/main.c` | C-точка входа: BOOT-кнопка, `kouki_station_init()`, запуск |
+| `main/kouki_api.cpp` | объектный граф станции и прежний порядок инициализации (`app_main` 1:1), C-фасад `kouki_api.h` |
+| `main/app_voice.cpp` | `kouki::Voice`: запись WAV в PSRAM, отправка на `/api/voice`, разбор ответа, диагностика уровней |
+| `main/app_audio_out.cpp` | `kouki::AudioOut`: очередь PCM к кодеку, владение буфером, leaf-lock, abort |
+| `main/app_tone.cpp` | `kouki::Tone`: процедурный синтез и воспроизведение коротких сигналов (PCM 16 кГц в RAM) |
+| `main/app_speech.cpp` | `kouki::Speech`: речь ответа, `POST /api/speech`, разбор WAV, стереопара L=R |
+| `main/app_wake.cpp`, `main/app_wake_verify.cpp` | `kouki::Wake` (детектор кодового слова на esp-dl) и `kouki::WakeVerify` (подтверждение у сервера) |
+| `main/app_wifi.cpp` | `kouki::Wifi`: Wi-Fi в режиме станции с переподключением |
+| `main/app_http.cpp` | `kouki::Http`: HTTPS-клиент, ответ и диагностика ошибок связи |
+| `main/app_config.cpp` | `kouki::Config`: настройки в NVS, миграция, маскирование секретов |
+| `main/app_ota.cpp` | `kouki::Ota`: обновление прошивки через сервер, подтверждение образа |
+| `main/app_setup.cpp` | `kouki::Setup`: портал настройки (SoftAP + httpd) и USB-консоль |
+| `main/app_time.cpp`, `main/app_power.cpp`, `main/app_history.cpp` | `kouki::Time` (SNTP), `kouki::Power` (дисплей/димминг), `kouki::History` (кольцо в PSRAM) |
+| `main/app_vad.cpp` | `kouki::Vad`: детектор речи по фреймам 30 мс |
+| `main/app_ui.cpp`, `main/ui/` | `kouki::ui`: экран, тач-зоны и автомат состояний (LVGL 8.3), русские шрифты |
+| `main/fsm/` | `kouki::voice`: голосовой автомат, парсер ответа сервера, история |
 | `main/drivers/` | драйверы Waveshare (Apache-2.0), см. `main/drivers/README.md` |
 | `components/audio_board/` | инициализация кодека ES8311/ES7210 и чтение микрофона |
+
+Host-стенды модулей (без платы и ESP-IDF): `firmware/test/`, запуск
+`tools/test-host.sh` — см. [firmware/test/README.md](firmware/test/README.md).
 
 ## Документация
 
