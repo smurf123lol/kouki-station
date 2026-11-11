@@ -86,6 +86,39 @@ esp_err_t esp_audio_play(const int16_t *data, int length, TickType_t ticks_to_wa
         call->bytes = length;
         call->first[0] = (data != NULL && length >= 2) ? data[0] : 0;
         call->first[1] = (data != NULL && length >= 4) ? data[1] : 0;
+        call->edge_samples = 0;
+        call->peak = 0;
+        call->head_frames = 0;
+        call->tail_frames = 0;
+        call->peak = 0;
+        if (data != NULL && length > 0) {
+            const int total = length / (int)sizeof(int16_t);
+            const int edge = AUDIO_MOCK_EDGE_SAMPLES;
+            /* Пик по всему блоку: края хранятся только частично, а чтобы
+             * проверить огибающую fade, нужна настоящая полная амплитуда. */
+            for (int i = 0; i < total; i++) {
+                const int v = data[i] < 0 ? -(int)data[i] : (int)data[i];
+                if (v > call->peak) {
+                    call->peak = (int16_t)(v > 32767 ? 32767 : v);
+                }
+            }
+            if (total <= edge * 2) {
+                /* Блок короткий: весь попадает в head, tail остаётся пустым. */
+                for (int i = 0; i < total; i++) {
+                    call->head[i] = data[i];
+                }
+                call->head_frames = total / 2;
+                call->edge_samples = total;
+            } else {
+                for (int i = 0; i < edge; i++) {
+                    call->head[i] = data[i];
+                    call->tail[i] = data[total - edge + i];
+                }
+                call->head_frames = edge / 2;
+                call->tail_frames = edge / 2;
+                call->edge_samples = total;
+            }
+        }
         call->silence = true;
         if (data != NULL) {
             const uint8_t *raw = (const uint8_t *)data;

@@ -6,10 +6,12 @@
 //
 // Файл собирается дважды: с CONFIG_KOUKI_SIGNAL_VOLUME=50 (обычный) и =0
 // (каталог quiet/) — во втором случае Tone обязан молчать и не трогать кодек.
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #if defined(__GLIBC__)
@@ -56,11 +58,27 @@ static void test_init_and_lock()
     CHECK(kouki_audio_out_init() == ESP_OK, "init -> ESP_OK");
     CHECK(kouki_audio_out_init() == ESP_OK, "повторный init -> ESP_OK (идемпотентно)");
 
-    // lock/unlock сбалансированы и допускают вложение (мьютекс рекурсивный
-    // по контракту вызывающего: в C-модуле это был xSemaphoreTake).
+    // lock/unlock — это leaf-lock вокруг TX-кодека, а не пустая пара вызовов.
+    // Пункт 11 ревью П5: раньше здесь стоял CHECK(true, "не падают"), который
+    // не мог упасть никогда. Проверяем наблюдаемый контракт: пока замок
+    // взят вызывающим, worker не отдаёт блок кодеку, а после unlock — отдаёт.
+    audio_mock_reset();
+    static int16_t probe[3200];
+    probe[0] = 3;
+
     kouki_audio_out_lock();
+    CHECK(kouki_audio_out_enqueue_pcm(probe, sizeof(probe), false) == ESP_OK,
+          "enqueue под взятым замком");
+    // worker успел бы отдать блок кодеку, если бы замок не держал
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    CHECK(audio_mock_play_calls() == 0,
+          "пока замок взят, кодек блок не получает (leaf-lock работает)");
+
     kouki_audio_out_unlock();
-    CHECK(true, "lock/unlock не падают и не зависают");
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK,
+          "после unlock очередь разошлась");
+    // 3200 сэмплов = 6400 байт -> worker дробит блок на два чанка по 3200.
+    CHECK(audio_mock_play_calls() == 2, "после unlock блок доигран (два чанка)");
 
     CHECK(&kouki::audio_out() == &kouki::audio_out(), "audio_out() — один экземпляр");
     CHECK(kouki::audio_out().init() == ESP_OK, "метод init() -> ESP_OK");
@@ -334,6 +352,149 @@ static void test_enqueue_ownership_on_timeout()
           "отказные буферы освобождены: прирост кучи не больше принятых в очередь");
 }
 
+/**
+ * Пункт 8 ревью П5 (мутант a8): guard «NULL или нулевая длина» в enqueue_pcm.
+ *
+ * Guard стоит ДО ready()/init() и ДО постановки в очередь. Без него:
+ * (а) буфер нулевой длины с владением никто не освободит — worker играет
+ * только `bytes > 0`, поэтому free в его ветке не выполнится;
+ * (б) в очередь попадёт пустой Item (data = NULL, bytes = 0), и is_busy()
+ * на мгновение станет true — «занят, хотя играть нечего».
+ *
+ * Поведение 1:1 с master (db4bd1b:171-178): и NULL/0, и нулевая длина
+ * возвращают ESP_OK, а не ESP_ERR_INVALID_ARG — это не ошибка вызывающего,
+ * а «нечего играть». Задача требует проверить именно отсутствие падения и
+ * освобождение памяти.
+ */
+static void test_enqueue_zero_guard()
+{
+    std::printf("[TEST] 7в. Guard NULL/ноль: память освобождена, кодек молчит...\n");
+
+    audio_mock_reset();
+    audio_mock_set_delay_us(50 * 1000);
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "очередь пуста перед кейсом");
+
+    // (а) NULL с владением: не падает и ничего не играет. Контракт master
+    // (db4bd1b:171-178) — ESP_OK, а не ESP_ERR_INVALID_ARG: «нечего играть»
+    // не ошибка вызывающего.
+    CHECK(kouki_audio_out_enqueue_pcm(NULL, 0, true) == ESP_OK,
+          "enqueue(NULL, 0, own) -> ESP_OK (как master)");
+    CHECK(audio_mock_play_calls() == 0, "NULL не дошёл до кодека");
+    CHECK(!kouki_audio_out_is_busy(), "после enqueue(NULL, 0) не «занят»");
+
+    // (б) Нулевая длина с НЕнулевым буфером и владением: буфер обязан быть
+    // освобождён. Без guard он утечёт: worker играет только элементы с bytes > 0
+    // и free в этой ветке не выполнит, а класть в очередь нечего.
+    void *warm = malloc(3200);
+    free(warm);  // прогрев арены, чтобы дельта кучи считалась от стабильного дна
+
+    const long before = heap_in_use();
+    int16_t *zero = (int16_t *)malloc(3200);
+    CHECK(zero != NULL, "буфер нулевой длины выделен");
+    CHECK(kouki_audio_out_enqueue_pcm(zero, 0, true) == ESP_OK,
+          "enqueue(bytes=0, own) -> ESP_OK");
+    const long after = heap_in_use();
+
+    CHECK(after - before <= 0,
+          "буфер нулевой длины освобождён, а не утёк в очередь");
+    CHECK(audio_mock_play_calls() == 0, "нулевая длина не играется");
+    CHECK(!kouki_audio_out_is_busy(), "после enqueue(bytes=0) не «занят»");
+
+    // (в) Guard не отбирает владение у НЕнулевого буфера: такой элемент
+    // доигрывает и освобождается worker'ом.
+    int16_t *real = (int16_t *)malloc(3200);
+    CHECK(real != NULL, "обычный буфер выделен");
+    real[0] = 5;
+    CHECK(kouki_audio_out_enqueue_pcm(real, 3200, true) == ESP_OK, "enqueue обычного");
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "обычный доигран");
+    CHECK(audio_mock_play_calls() == 1, "обычный элемент сыгран");
+    audio_mock_set_delay_us(0);
+}
+
+/**
+ * Пункт 10 ревью П5 (мутант a20): TONE_FADE_MS 5 -> 0.
+ *
+ * Fade делает перепад плавным: gain = i/fade для кадра i в начале блока и
+ * (frames-1-i)/fade в конце, поэтому первые кадры почти нулевые, а последний
+ * сэмпл ровно нулевой. Без fade (fade = 0) ветки `i < fade` не выполняются,
+ * gain = 1.0, и первые кадры сразу идут на полной громкости синуса.
+ *
+ * Почему нельзя проверить «огибающую от наблюдаемого пика»: у START есть
+ * затухание (decay_x10 = 6), поэтому пик блока приходится на t ≈ 0.7, а не
+ * на начало, и линейная огибающая от пика ничего не ограничивает. Зато
+ * отношение «первые кадры / пик блока» различает случаи на порядок:
+ * с fade максимум первых восьми кадров — около 14 % пика (замер: 1494/10761),
+ * без fade первый же кадр даёт ~35 % пика и быстро выходит на пик.
+ *
+ * Тонкости: блок СТЕРЕО (сэмплы чередуются L/R, кадр = 2 сэмпла), а первый
+ * сэмпл у синуса и так ноль (sin(0) = 0) — поэтому смотрим окрестность, а не
+ * только head[0]. Мок отдаёт крайние AUDIO_MOCK_EDGE_SAMPLES сэмплов и пик по
+ * всему блоку (audio_mock.h).
+ */
+static void test_tone_fade()
+{
+    std::printf("[TEST] 10. Tone: плавный перепад на краях (fade)...\n");
+
+#if TONE_EXPECT_VOLUME_0
+    // При громкости 0 сигналов нет вовсе — fade проверять не на чем.
+    std::printf("  (volume=0: fade не проверяется, сигналы отключены)\n");
+#else
+    audio_mock_reset();
+    kouki_tone_play(KOUKI_TONE_START);
+
+    CHECK(audio_mock_play_calls() >= 1, "START сыгран");
+    const audio_mock_call_t *call = audio_mock_call(0);
+    CHECK(call != NULL, "блок START записан");
+    CHECK(call->head_frames > 0 && call->tail_frames > 0, "мок отдал края блока");
+    CHECK(call->peak > 1000, "блок громкий: пик найден по всему блоку");
+
+    // Крайние сэмплы блока — ровно нули: щелчка на границе нет.
+    CHECK(call->head[0] == 0, "fade-in: первый сэмпл ровно ноль");
+    CHECK(call->tail[call->tail_frames * 2 - 1] == 0, "fade-out: последний сэмпл ровно ноль");
+
+    /*
+     * Главная проверка: первые кадры заметно тише пика блока. Без fade они
+     * сразу идут на полной громкости, и отношение близко к единице.
+     */
+    const int probe_frames = 8;
+    CHECK(call->head_frames >= probe_frames, "мок запомнил достаточно кадров начала");
+    int early_max = 0;
+    for (int frame = 1; frame < probe_frames; frame++) {
+        const int left = std::abs((int)call->head[frame * 2]);
+        const int right = std::abs((int)call->head[frame * 2 + 1]);
+        if (left > early_max) {
+            early_max = left;
+        }
+        if (right > early_max) {
+            early_max = right;
+        }
+    }
+    const double ratio = (double)early_max / (double)call->peak;
+    CHECK(ratio < 0.25, "fade-in: первые кадры тише четверти пика (иначе fade нет)");
+
+    /*
+     * Симметрично на выходе: кадры у конца блока тоже тише пика. С fade
+     * последний сэмпл нулевой, предпоследние — единицы процентов пика; без
+     * fade последний кадр равен обычному отсчёту синуса.
+     */
+    const int tail_frames = call->tail_frames;
+    int late_max = 0;
+    for (int k = 1; k < probe_frames; k++) {
+        const int base = (tail_frames - 1 - k) * 2;
+        const int left = std::abs((int)call->tail[base]);
+        const int right = std::abs((int)call->tail[base + 1]);
+        if (left > late_max) {
+            late_max = left;
+        }
+        if (right > late_max) {
+            late_max = right;
+        }
+    }
+    const double late_ratio = (double)late_max / (double)call->peak;
+    CHECK(late_ratio < 0.25, "fade-out: последние кадры тише четверти пика");
+#endif
+}
+
 // ------------------------------------------------------------------- Tone --
 
 static void test_tone_pattern()
@@ -348,7 +509,14 @@ static void test_tone_pattern()
     kouki_tone_play(KOUKI_TONE_START);
     CHECK(audio_mock_play_calls() == 0, "volume=0: кодек не задействован");
     CHECK(g_wake_mute_calls == 0, "volume=0: детектор не подавляется");
-    CHECK(true, "Tone молчит при CONFIG_KOUKI_SIGNAL_VOLUME=0");
+    // Молчание проверяем для всех четырёх сигналов, а не только START:
+    // каждый обязан выйти до синтеза и до подавления детектора.
+    kouki_tone_play(KOUKI_TONE_WAKE);
+    kouki_tone_play(KOUKI_TONE_STOP_SENDING);
+    kouki_tone_play(KOUKI_TONE_ERROR);
+    CHECK(audio_mock_play_calls() == 0, "volume=0: все четыре сигнала молчат");
+    CHECK(g_wake_mute_calls == 0, "volume=0: детектор не подавляется ни разу");
+    CHECK(g_wake_mute_last_ms == 0, "volume=0: длительность подавления даже не задана");
 #else
     // START: один тон 100 мс -> 1600 кадров, стерео = 6400 байт, плюс 80 мс тишины.
     kouki_tone_play(KOUKI_TONE_START);
@@ -420,7 +588,9 @@ int main()
     test_direct_play();
     test_enqueue_guards();
     test_enqueue_ownership_on_timeout();
+    test_enqueue_zero_guard();
     test_tone_pattern();
+    test_tone_fade();
     test_facade();
 
     std::printf("========================================\n");
