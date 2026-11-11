@@ -59,7 +59,42 @@ typedef struct {
     uint8_t bssid[6];
 } wifi_sta_config_t;
 
-/** Конфигурация точки доступа (SoftAP портала настройки, T121 П11). */
+/* Типы ниже нужны только для того, чтобы wifi_ap_config_t имел ТУ ЖЕ
+ * раскладку полей, что в IDF (esp_wifi_types_generic.h:525-544). Ни один
+ * тест их значения не читает: SoftAP-портал выставляет ssid/password/
+ * authmode/max_connection, остальное остаётся нулями. */
+typedef enum {
+    WIFI_CIPHER_TYPE_NONE = 0,
+    WIFI_CIPHER_TYPE_WEP40,
+    WIFI_CIPHER_TYPE_TKIP,
+    WIFI_CIPHER_TYPE_CCMP,
+} wifi_cipher_type_t;
+
+typedef struct {
+    bool capable;
+    bool required;
+} wifi_pmf_config_t;
+
+typedef enum {
+    WPA3_SAE_PWE_UNSPECIFIED = 0,
+    WPA3_SAE_PWE_HUNT_AND_PECK,
+    WPA3_SAE_PWE_HASH_TO_ELEMENT,
+    WPA3_SAE_PWE_BOTH,
+} wifi_sae_pwe_method_t;
+
+typedef struct {
+    uint16_t period;
+    bool protected_keep_alive;
+} wifi_bss_max_idle_config_t;
+
+/**
+ * Конфигурация точки доступа (SoftAP портала настройки, T121 П11).
+ *
+ * Пункт 33 ревью П11: структура описана ЦЕЛИКОМ, как в IDF, а не до
+ * beacon_interval. Хвост ниже тестами не используется, но без него мок
+ * молча расходится с реальной прошивкой по sizeof, и любая будущая проверка
+ * смещений полей после beacon_interval дала бы ложный результат.
+ */
 typedef struct {
     uint8_t ssid[32];
     uint8_t password[64];
@@ -69,6 +104,16 @@ typedef struct {
     uint8_t ssid_hidden;
     uint8_t max_connection;
     uint16_t beacon_interval;
+    uint8_t csa_count;
+    uint8_t dtim_period;
+    wifi_cipher_type_t pairwise_cipher;
+    bool ftm_responder;
+    wifi_pmf_config_t pmf_cfg;
+    wifi_sae_pwe_method_t sae_pwe_h2e;
+    uint8_t transition_disable;
+    uint8_t sae_ext;
+    wifi_bss_max_idle_config_t bss_max_idle_cfg;
+    uint16_t gtk_rekey_interval;
 } wifi_ap_config_t;
 
 typedef struct {
