@@ -224,7 +224,7 @@ static void test_init_no_mem()
 
 static void test_mute_after_init()
 {
-    std::printf("[TEST] 4. init глушит детектор на 2.5 с (щелчки микрофона)...\n");
+    std::printf("[TEST] 4. init глушит детектор на 10 с (старт микрофона и сети)...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
     kouki_wake_reset();
@@ -233,7 +233,7 @@ static void test_mute_after_init()
     CHECK(!kouki_wake_feed(pcm.data(), static_cast<int>(pcm.size())), "в окне mute хита нет");
     CHECK(wake_mock_rfft_runs() == 0, "в окне mute FFT не считает");
 
-    wake_mock_advance_us(2600 * 1000);
+    wake_mock_advance_us(10100 * 1000);
     kouki_wake_feed(pcm.data(), static_cast<int>(pcm.size()));
     CHECK(wake_mock_rfft_runs() > 0, "после окна mute звук снова обрабатывается");
 }
@@ -243,9 +243,9 @@ static void test_mute_and_reset_facade()
     std::printf("[TEST] 5. mute(): окно глушения, reset() не ломает готовность...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
 
     kouki_wake_mute(1000);
@@ -268,9 +268,9 @@ static void test_preroll_ring()
     std::printf("[TEST] 6. кольцо предзаписи: порядок, переполнение, очистка...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
 
     /* Кольцо предзаписи переживает и reset(), и deinit() — как в образе
@@ -316,9 +316,9 @@ static void test_energy_filter()
     std::printf("[TEST] 7. энергетический фильтр: тишина не даёт хита...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
 
     const std::vector<int16_t> silence = make_silence(32000);
@@ -336,9 +336,9 @@ static void test_fixture_wake_word()
     std::printf("[TEST] 8. фикстура ey_gin.wav: детектор срабатывает...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
 
     const std::vector<int16_t> pcm = load_wav(repo_root() + "/sim/fixtures/mic/ey_gin.wav");
@@ -356,9 +356,9 @@ static void test_fixture_threshold()
     std::printf("[TEST] 9. порог берётся из Config: 65 молчит, 10 ловит постороннюю речь...\n");
     reset_all(true, 65);
     CHECK(kouki_wake_init() == ESP_OK, "init с порогом 65 -> ESP_OK");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
     CHECK(kouki_config_get_wake_threshold() == 65, "порог из NVS прочитан");
 
@@ -367,9 +367,9 @@ static void test_fixture_threshold()
 
     /* Порог меняется на ходу — следующий проход должен поймать ложный хит. */
     CHECK(kouki_config_set_wake_threshold(10) == ESP_OK, "порог 10 принят");
-    /* mute_until_us — абсолютное время: окно глушения от init() (2.5 с)
+    /* mute_until_us — абсолютное время: окно глушения от init() (10 с)
      * прокручиваем, а не обнуляем часы. */
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
     CHECK(feed_chunks(bystander) > 0, "при пороге 10 та же речь даёт ложный хит");
 
@@ -386,7 +386,7 @@ static void test_ready_follows_config()
     CHECK(kouki_config_set_wake_enabled(false) == ESP_OK, "выключили фичу на ходу");
     CHECK(!kouki_wake_is_ready(), "готовность снята без deinit");
     const std::vector<int16_t> pcm = make_quiet(2048);
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     CHECK(!kouki_wake_feed(pcm.data(), static_cast<int>(pcm.size())), "feed при wake_en=0 -> false");
 
     CHECK(kouki_config_set_wake_enabled(true) == ESP_OK, "включили обратно");
@@ -410,7 +410,7 @@ static void test_two_hits_required()
     for (uint8_t th : {(uint8_t)10, (uint8_t)20}) {
         reset_all(true, th);
         CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-        wake_mock_advance_us(5 * 1000 * 1000);
+        wake_mock_advance_us(10500 * 1000);
         kouki_wake_reset();
 
         const size_t n = 16u * 500u;  // 500 мс: ровно одно срабатывание модели
@@ -425,7 +425,7 @@ static void test_two_hits_required()
     /* Полная запись — хит есть: требование «два подряд» не блокирует детектор. */
     reset_all(true, 10);
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
     CHECK(feed_chunks(full) == 1, "на полной записи ровно один хит");
 }
@@ -443,7 +443,7 @@ static void test_mute_window_units()
     std::printf("[TEST] 17. окно mute в мс, а не в мкс (m08)...\n");
     reset_all();
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
 
     kouki_wake_mute(1000);
@@ -495,7 +495,7 @@ static void test_energy_threshold_and_wav_sizes()
     // пороге вероятности 10 (мутант m10 здесь даёт два хита).
     reset_all(true, 10);
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
     CHECK(feed_chunks(scaled_to(400)) == 0,
           "пик окна 400 (ниже 500) отсекается энергетическим фильтром");
@@ -503,7 +503,7 @@ static void test_energy_threshold_and_wav_sizes()
     // Пик 520 > 500: фильтр пропускает, детектор срабатывает.
     reset_all(true, 10);
     CHECK(kouki_wake_init() == ESP_OK, "init -> ESP_OK");
-    wake_mock_advance_us(5 * 1000 * 1000);
+    wake_mock_advance_us(10500 * 1000);
     kouki_wake_reset();
     CHECK(feed_chunks(scaled_to(520)) > 0, "пик окна 520 проходит фильтр и ловится");
 
@@ -529,22 +529,25 @@ static void test_matches()
 {
     std::printf("[TEST] 11. матчинг «эй гин» по вариантам Whisper...\n");
 
-    /* Матчинг 1:1 с master: сравнение по подстроке, регистрозависимое
-     * (strstr), поэтому «Эй, Дин!» из замера Whisper в верхнем регистре
-     * мастер НЕ принимал — поведение сохраняем, а не «улучшаем». */
+    /* Сверка регистронезависимая: живой замер Whisper дал «Эй, Динь», и
+     * регистрозависимый strstr (поведение старого master) отклонял настоящий
+     * хит — запись обрывалась через ~3 с. Теперь регистр и «ь» не мешают. */
     CHECK(kouki_wake_verify_matches("эй гин"), "точное совпадение");
     CHECK(kouki_wake_verify_matches("джин"), "слово семейства «джин»");
     CHECK(kouki_wake_verify_matches("Джин, включи свет"), "слово в начале фразы");
     CHECK(kouki_wake_verify_matches("Пейдем!"), "короткое обращение с префиксом «пей»");
     CHECK(kouki_wake_verify_matches("эдит!"), "короткое обращение с префиксом «эд»");
     CHECK(kouki_wake_verify_matches("эй гин включи свет в комнате"), "слово в длинной фразе ловится");
+    CHECK(kouki_wake_verify_matches("Эй, Дин!"), "живой замер Whisper с заглавной — принимается");
+    CHECK(kouki_wake_verify_matches("Эй, Динь"), "мягкий знак в конце не мешает");
+    CHECK(kouki_wake_verify_matches("Эдик"), "короткое обращение с «эд» капсом");
+    CHECK(kouki_wake_verify_matches("ГИН"), "«ГИН» капсом принимается");
 
     CHECK(!kouki_wake_verify_matches(""), "пустая строка -> не совпало");
     CHECK(!kouki_wake_verify_matches(nullptr), "NULL -> не совпало");
     CHECK(!kouki_wake_verify_matches("Странно работает."), "посторонняя речь -> не совпало");
+    CHECK(!kouki_wake_verify_matches("[музыка]"), "шумовая метка -> не совпало");
     CHECK(!kouki_wake_verify_matches("включи свет в комнате пожалуйста"), "длинная фраза без слова -> нет");
-    CHECK(!kouki_wake_verify_matches("Эй, Дин!"), "верхний регистр мастер не ловит (регресс не вводим)");
-    CHECK(!kouki_wake_verify_matches("ГИН"), "«ГИН» капсом мастер не ловит");
 }
 
 static void test_verify_start_args()

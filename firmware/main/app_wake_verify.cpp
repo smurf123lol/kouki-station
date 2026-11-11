@@ -69,6 +69,37 @@ bool contains(const char *hay, const char *needle)
     return hay && needle && strstr(hay, needle) != NULL;
 }
 
+/** Переводит ASCII и кириллицу UTF-8 в нижний регистр (правка на месте).
+    Whisper пишет обращения с заглавной («Эй, Динь»), а needles у нас строчные. */
+void lower_utf8(char *s)
+{
+    for (size_t i = 0; s[i] != '\0'; ++i) {
+        const unsigned char c = (unsigned char)s[i];
+        if (c >= 'A' && c <= 'Z') {
+            s[i] = (char)(c - 'A' + 'a');
+            continue;
+        }
+        if ((c == 0xD0 || c == 0xD1) && s[i + 1] != '\0') {
+            const unsigned char n = (unsigned char)s[i + 1];
+            if (c == 0xD0 && n == 0x81) {           /* Ё -> ё */
+                s[i] = (char)0xD1;
+                s[i + 1] = (char)0x91;
+                ++i;
+                continue;
+            }
+            if (c == 0xD0 && n >= 0x90 && n <= 0xAF) { /* А-Я -> а-я */
+                const unsigned cp = (((unsigned)(c & 0x1F)) << 6) | (unsigned)(n & 0x3F);
+                const unsigned low = cp + 0x20;         /* 0x0410..0x042F -> 0x0430..0x044F */
+                s[i] = (char)(0xC0 | (low >> 6));
+                s[i + 1] = (char)(0x80 | (low & 0x3F));
+                ++i;
+                continue;
+            }
+            ++i;                                     /* двухбайтовый символ без изменений */
+        }
+    }
+}
+
 /* Достаёт значение поля "transcript" из JSON без полноценного парсера:
    для двух полей этого достаточно, а зависимость на cJSON в этой задаче не нужна. */
 bool extract_transcript(const char *json, char *out, size_t out_len)
@@ -116,6 +147,13 @@ bool WakeVerify::matches(const char *transcript)
     if (!transcript || transcript[0] == '\0') {
         return false;
     }
+
+    /* Сверка без учёта регистра: «Эй, Динь» должен пройти так же, как «эй гин». */
+    char lowered[128];
+    strncpy(lowered, transcript, sizeof(lowered) - 1);
+    lowered[sizeof(lowered) - 1] = '\0';
+    lower_utf8(lowered);
+    transcript = lowered;
 
     /* Whisper на живой записи почти никогда не пишет «эй гин» дословно:
        в замерах встречались «Эй, Дин!», «Эдит!», «Пейдем!», «Рейдин, покой…».
