@@ -23,6 +23,22 @@
 #include "setup_mock.h"
 #include "setup_stubs.h"
 
+// Стражи конфига стенда. Стенд Setup собирается с одним набором CONFIG_KOUKI_*
+// (support/setup/sdkconfig.h через -include, см. tools/test-host.sh). Если набор
+// сузится — уберут define, снимут -include или поставят флаг в 0, — проверки
+// test_seed_history/test_mock_done молча выпадут и прогон останется зелёным
+// (220 → 214 проверок, exit 0). Именно так умерли 4 проверки до пункта 32 ревью
+// П11, поэтому регрессия конфига должна валить СБОРКУ, а не уменьшать счётчик.
+#if !defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS) || (CONFIG_KOUKI_TEST_CONSOLE_CMDS + 0) != 1
+#error "test_setup.cpp должен видеть CONFIG_KOUKI_TEST_CONSOLE_CMDS=1 из support/setup/sdkconfig.h: иначе блоки test_seed_history/test_mock_done молча выпадают (см. пункт 32 ревью П11 и README стендов)."
+#endif
+// Тот же класс дефекта для второго TU: app_setup.cpp печатает справку и
+// регистрирует консольные команды под этим флагом, поэтому значение сверяется
+// ещё и здесь — иначе «1» и «0» в help неразличимы (мутация C).
+#if !defined(CONFIG_KOUKI_WIFI_TIMEOUT_S) || (CONFIG_KOUKI_WIFI_TIMEOUT_S + 0) != 25
+#error "test_setup.cpp должен видеть CONFIG_KOUKI_WIFI_TIMEOUT_S=25 (Kconfig.projbuild): разные наборы sdkconfig у app_setup.cpp и test_setup.cpp = разные представления о сборке."
+#endif
+
 static int g_checks = 0;
 
 #define CHECK(cond, msg) do {                                                 \
@@ -503,7 +519,8 @@ static void test_console_voice()
     CHECK(setup_voice_start_calls() == 2, "ask запускает запись");
     CHECK(setup_voice_last_session() == KOUKI_SESSION_ASK, "ask — сессия ASK");
 
-#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+    // Без #if: видимость и значение флага проверены стражами выше, поэтому
+    // эти проверки обязаны исполняться всегда (иначе счётчик молча падает).
     kouki::setup().handle_console_command("test_seed_history");
     CHECK(setup_history_clear_calls() == 1, "test_seed_history чистит историю");
     CHECK(setup_history_push_calls() == KOUKI_HISTORY_CAPACITY,
@@ -512,7 +529,6 @@ static void test_console_voice()
 
     kouki::setup().handle_console_command("test_mock_done");
     CHECK(setup_voice_mock_done_calls() == 1, "test_mock_done доходит до FSM");
-#endif
 }
 
 static void test_console_init()
@@ -641,10 +657,8 @@ static void test_review_gaps()
         CHECK(help.find(line) != std::string::npos,
               "help перечисляет команду вместе с описанием");
     }
-#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
     CHECK(help.find("test_seed_history") != std::string::npos, "help знает test_seed_history");
     CHECK(help.find("test_mock_done") != std::string::npos, "help знает test_mock_done");
-#endif
 
     const std::string diag = body_of(src, "strcmp(cmd, \"diag\") == 0");
     CHECK(diag.find("Свободная память кучи: %u байт, PSRAM: %u байт") != std::string::npos,

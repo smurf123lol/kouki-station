@@ -34,7 +34,7 @@ AudioOut (П5), подтверждение известной утечки по�
 | `t115: Real UI C++ classes` | `test_ui_statemachine.cpp` | 80 | настоящие классы `kouki::ui`: тач-зоны и свайпы, VAD-дуга и интерполяция, карточка ответа, мини-сфера против тела карточки, история и OOM-повтор, настройки с опросом Wi-Fi, модалки OTA/Setup |
 | `t121: Config` | `test_config.cpp` | 157 | `kouki::Config` на моке NVS: ключи 1:1, миграция `wake_mig`, `save`/`erase` (включая `ca_pem`), `is_complete`, маскирование секретов, совпадение вшитого CA с `certs/kouki-local-root.pem` |
 | `t116/t118: speech hostcheck` | `test_speech_host.c` | 92 | сценарии озвучки через C-фасад: WAV/стерео, нарезка по фразам, межфразовая пауза, блокировка записи во время игры, abort/поколения, EAGAIN заголовков и тела, границы буфера ответа |
-| `T121 П10: kouki::Speech` | `test_speech.cpp` | 45 | границы `wav_parse`/`stereo_expand`, `busy`/`is_playing`/`worker_active`, равенство фасада и методов класса |
+| `T121 П10: kouki::Speech` | `test_speech.cpp` | 46 | границы `wav_parse`/`stereo_expand`, `busy`/`is_playing`/`worker_active`, равенство фасада и методов класса |
 | `t121: Time, History, Power` | `test_time_history_power.cpp` | 88 | `kouki::Time` (TZ, форматирование, отказ при несинхронизированном времени), `kouki::History` (кольцо, версия, фильтры, повторный `init`), `kouki::Power` (димминг, насыщение, активность) |
 | `t121: Vad` | `test_vad.cpp` | 96 | `kouki::Vad`: смешанный чанк, частичный FIFO и чанк больше фрейма, streak, метрики |
 | `t121: Wifi` | `test_wifi.cpp` | 160 | `kouki::Wifi`: отказы стека (netif/init/регистрация/режим/конфиг/старт), открытая сеть, backoff и его сброс по GOT_IP, `inactive_time`, `ip_len=0`, C-фасад |
@@ -112,6 +112,20 @@ AudioOut (П5), подтверждение известной утечки по�
   границей переданного буфера — показывает только кейс с буфером РОВНО `len`
   байт в куче (`std::vector<uint8_t> tiny(11, 0)`) и только под `--asan`. Предел
   закрывается отдельной задачей вместе с ужесточением guard-а.
+- **Шлюз конфига стенда.** Стенд Setup собирается с ОДНИМ набором
+  `CONFIG_KOUKI_*` — `support/setup/sdkconfig.h` подаётся через `-include` в
+  `tools/test-host.sh`, а общий гвард `KOUKI_TEST_SDKCONFIG_SEEN` не даёт
+  `support/wifi/sdkconfig.h` переопределить его позже. Так было не всегда:
+  до пункта 32 ревью П11 оба TU видели РАЗНЫЕ наборы (или ни одного), и блок
+  `test_seed_history`/`test_mock_done` из 6 проверок был мёртвым — 214 вместо
+  220 при зелёном прогоне. Сейчас сужение конфига валит СБОРКУ: в
+  `test_setup.cpp` стоят `#error`-стражи на видимость и значение
+  `CONFIG_KOUKI_TEST_CONSOLE_CMDS=1` и на `CONFIG_KOUKI_WIFI_TIMEOUT_S=25`,
+  а сами блоки проверок больше не обёрнуты в `#if`. Проверено мутациями:
+  убрать `define` (A), снять `"${SETUP_CFG[@]}"` с C++-сборки (B) или
+  поставить флаг в `0` (C) → `test-host: FAIL в шаге 'setup build'` с текстом
+  стража, exit 1. Остальные стенды такой шлюз не имеют: там значение флага,
+  если оно важно, сверяется отдельной проверкой.
 - **Известная утечка.** Повторный `Voice::init()` не освобождает прежний буфер
   (~480 КБ) — поведение master 1:1, спека T121 §3 запрещает чинить его в
   миграции. Стенд это фиксирует (`test_repeated_init_keeps_old_buffer`), а
