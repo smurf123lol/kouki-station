@@ -213,19 +213,19 @@ echo "=== t116/t118: speech hostcheck (real kouki::Speech + locks + abort gen) =
 # линковку входит app_config.cpp с моками config_mock (NVS + mbedtls);
 # kouki::audio_out() подменён support/speech/speech_factories.cpp (объект в
 # статике, без worker'а: звук стенд считает через stubs.c), Tone — настоящий.
-run "speech stubs" "$CC" -std=gnu11 -Wall -Wextra -pthread \
-    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
+run "speech stubs" "$CC" -std=gnu11 -Wall -Wextra -pthread -DKOUKI_TEST_LOG_CAPTURE \
+    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$SUPPORT" -I"$CJSON_DIR" -I"$MAIN" \
     -c "$SPEECH/stubs.c" -o "$OBJ_DIR/speech_stubs.o"
-run "speech test obj" "$CC" -std=gnu11 -Wall -Wextra -pthread \
-    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$CJSON_DIR" -I"$MAIN" \
+run "speech test obj" "$CC" -std=gnu11 -Wall -Wextra -pthread -DKOUKI_TEST_LOG_CAPTURE \
+    -I"$SPEECH/config" -I"$SPEECH/stub" -I"$SUPPORT" -I"$CJSON_DIR" -I"$MAIN" \
     -c "$TEST/test_speech_host.c" -o "$OBJ_DIR/test_speech_host.o"
-run "speech build" "$CXX" -std=c++17 -Wall -Wextra -pthread \
+run "speech build" "$CXX" -std=c++17 -Wall -Wextra -pthread -DKOUKI_TEST_LOG_CAPTURE \
     -I"$SPEECH/config" -I"$CFG_MOCK" -I"$SPEECH/stub" -I"$SUPPORT" -I"$CJSON_DIR" -I"$MAIN" \
     "$MAIN/app_speech.cpp" "$MAIN/app_config.cpp" "$MAIN/app_tone.cpp" \
     "$SPEECH/speech_factories.cpp" \
     "$OBJ_DIR/test_speech_host.o" "$OBJ_DIR/speech_stubs.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
-    "$OBJ_DIR/cJSON.o" \
+    "$OBJ_DIR/cJSON.o" "$OBJ_DIR/log_capture.o" \
     -pthread \
     -o "$OBJ_DIR/test_speech_bin"
 run "speech run" "$OBJ_DIR/test_speech_bin"

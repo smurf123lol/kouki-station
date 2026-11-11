@@ -31,10 +31,14 @@ int g_http_calls = 0;
 int g_http_status = 200;
 char g_http_url[256] = {0};
 char g_http_auth[320] = {0};
+char g_http_content_type[128] = {0};
 char g_http_bodies[16][512];
 int g_http_body_count = 0;
 int g_http_read_chunk_cap = 4096;
 int g_http_read_calls = 0;
+int g_http_read_max_len = 0;
+int g_voice_recording_on_read_call = 0;
+int g_voice_recording_on_play_call = 0;
 int g_abort_on_read_call = 0;
 int g_http_hdr_eagain_left = 0;
 int g_http_hdr_calls = 0;
@@ -44,8 +48,17 @@ bool g_busy_seen_in_http = false;
 bool g_playing_seen_in_http = false;
 
 int g_large_alloc_calls = 0;
+/* Пункт 27 ревью П10: размер последней PSRAM-аллокации и число вызовов
+ * «сервер ответил» — иначе границы alloc_cap и mark_server_communicated
+ * не наблюдаемы. */
+long g_last_alloc_size = 0;
+int g_server_communicated_calls = 0;
 
 int g_play_calls = 0;
+int g_audio_out_abort_calls = 0;
+/* Наблюдаемость межфразовой/финальной паузы (п.28): длина и порядок запросов. */
+int g_silence_calls = 0;
+int g_silence_ms[16] = {0};
 int g_play_bytes[128] = {0};
 int16_t g_first_pcm[16] = {0};
 int g_first_pcm_len = 0;
@@ -75,6 +88,14 @@ static size_t s_wav_pos = 0;
 
 static int16_t s_src_samples[16384];
 static size_t s_src_frames = 0;
+/* Синтетическое тело: сколько кадров дорисовать, не загружая их в массив.
+ * Нужно для проверки ветки overflow (тело больше kReadCap = 1.2 МБ). */
+size_t g_http_synth_frames = 0;
+/* Подмена длины из fetch_headers: >0 — ровно столько байт, -1 — «неизвестно»
+ * (chunked), 0 — как раньше, по фактическому WAV. */
+int64_t g_http_hdr_len_override = 0;
+/* Отдельный флаг: 0 — вернуть значение по умолчанию, 1 — отдать override как есть (в т.ч. 0). */
+int g_http_hdr_len_override_set = 0;
 static int s_src_channels = 1;
 static int s_src_bits = 16;
 static int s_src_rate = 16000;
@@ -85,10 +106,13 @@ void fake_speech_reset(void)
     g_http_status = 200;
     g_http_url[0] = '\0';
     g_http_auth[0] = '\0';
+    g_http_content_type[0] = '\0';
     g_http_body_count = 0;
     memset(g_http_bodies, 0, sizeof(g_http_bodies));
     g_http_read_chunk_cap = 4096;
     g_http_read_calls = 0;
+    g_http_read_max_len = 0;
+    g_voice_recording_on_read_call = 0;
     g_abort_on_read_call = 0;
     g_http_hdr_eagain_left = 0;
     g_http_hdr_calls = 0;
@@ -98,6 +122,11 @@ void fake_speech_reset(void)
     g_playing_seen_in_http = false;
 
     g_large_alloc_calls = 0;
+    g_last_alloc_size = 0;
+    g_server_communicated_calls = 0;
+    g_http_synth_frames = 0;
+    g_http_hdr_len_override = 0;
+    g_http_hdr_len_override_set = 0;
 
     g_play_calls = 0;
     memset(g_play_bytes, 0, sizeof(g_play_bytes));
@@ -112,6 +141,10 @@ void fake_speech_reset(void)
     g_audio_calls_while_playing = 0;
     g_audio_calls_while_busy = 0;
 
+    g_audio_out_abort_calls = 0;
+    g_silence_calls = 0;
+    memset(g_silence_ms, 0, sizeof(g_silence_ms));
+    g_voice_recording_on_play_call = 0;
     g_wake_mute_calls = 0;
     g_last_wake_mute_ms = 0;
     g_wake_mute_while_locked = 0;
@@ -175,7 +208,12 @@ static void put_le32(uint8_t *p, uint32_t v)
 static void build_wav(void)
 {
     const size_t bytes_per_sample = (size_t)s_src_bits / 8u;
-    const size_t data_bytes = s_src_frames * (size_t)s_src_channels * bytes_per_sample;
+    size_t frames = s_src_frames;
+    /* Синтетические кадры: тело нужного размера без 600k элементов в тесте. */
+    if (g_http_synth_frames > frames) {
+        frames = g_http_synth_frames;
+    }
+    const size_t data_bytes = frames * (size_t)s_src_channels * bytes_per_sample;
     const size_t need = 44u + data_bytes;
     if (need > s_wav_cap) {
         free(s_wav_buf);
@@ -197,7 +235,15 @@ static void build_wav(void)
     memcpy(s_wav_buf + 36, "data", 4);
     put_le32(s_wav_buf + 40, (uint32_t)data_bytes);
     if (data_bytes > 0) {
-        memcpy(s_wav_buf + 44, s_src_samples, data_bytes);
+        const size_t loaded = s_src_frames * (size_t)s_src_channels * bytes_per_sample;
+        const size_t copy = loaded < data_bytes ? loaded : data_bytes;
+        if (copy > 0) {
+            memcpy(s_wav_buf + 44, s_src_samples, copy);
+        }
+        /* Дорисовка синтетики: пила, чтобы данные были не нулевые. */
+        for (size_t i = copy; i < data_bytes; i++) {
+            s_wav_buf[44 + i] = (uint8_t)(i & 0xFF);
+        }
     }
     s_wav_pos = 0;
 }
@@ -211,6 +257,7 @@ static void build_wav(void)
 void *heap_caps_malloc(size_t size, uint32_t caps)
 {
     (void)caps;
+    g_last_alloc_size = (long)size;
     if (size >= 1024u * 1024u) {
         g_large_alloc_calls++;
     }
@@ -256,6 +303,10 @@ esp_err_t kouki_audio_play_silence(uint32_t silence_ms, TickType_t ticks_to_wait
 {
     (void)ticks_to_wait;
     if (silence_ms == 0) return ESP_OK;
+    if (g_silence_calls < 16) {
+        g_silence_ms[g_silence_calls] = (int)silence_ms;
+    }
+    g_silence_calls++;
     kouki_audio_out_lock();
     /* Тишина произвольной длины. Прошивка просит silence_ms * 64 байт
      * (стерео-буфер), а статический zeros[320] был всего 640 байт: на 250 мс
@@ -304,6 +355,9 @@ esp_err_t kouki_audio_out_enqueue_silence(uint32_t silence_ms)
 
 void kouki_audio_out_abort(void)
 {
+    /* Пункт 29 ревью П10: abort — наблюдаемый эффект, а не пустая заглушка:
+     * стенд проверяет, что Speech::abort действительно доходит до кодека. */
+    g_audio_out_abort_calls++;
 }
 
 esp_err_t kouki_audio_out_wait_idle(TickType_t ticks_to_wait)
@@ -333,7 +387,11 @@ void kouki_wake_mute(int duration_ms)
  * сервер задаются через публичный C-фасад конфигурации (см. main()).
  */
 
-void kouki_ota_mark_server_communicated(void) {}
+void kouki_ota_mark_server_communicated(void)
+{
+    /* Пункт 27: вызов из ветки «сервер ответил» должен быть наблюдаем. */
+    g_server_communicated_calls++;
+}
 
 bool kouki_voice_get_snapshot(kouki_voice_state_t *out_state, kouki_voice_result_t *out_result)
 {
@@ -390,6 +448,9 @@ esp_err_t esp_http_client_set_header(esp_http_client_handle_t client, const char
     if (key && strcmp(key, "Authorization") == 0 && value) {
         snprintf(g_http_auth, sizeof(g_http_auth), "%s", value);
     }
+    if (key && strcmp(key, "Content-Type") == 0 && value) {
+        snprintf(g_http_content_type, sizeof(g_http_content_type), "%s", value);
+    }
     return ESP_OK;
 }
 
@@ -433,6 +494,9 @@ int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client)
         return -ESP_ERR_HTTP_EAGAIN;
     }
     build_wav();
+    if (g_http_hdr_len_override_set != 0) {
+        return g_http_hdr_len_override;
+    }
     return g_http_status == 200 ? (int64_t)s_wav_len : 32;
 }
 
@@ -446,6 +510,13 @@ int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len)
 {
     (void)client;
     g_http_read_calls++;
+    if (len > g_http_read_max_len) {
+        g_http_read_max_len = len;
+    }
+    if (g_voice_recording_on_read_call > 0 && g_http_read_calls == g_voice_recording_on_read_call) {
+        /* Хук: посреди загрузки WAV стартовала запись — Speech обязан прервать play. */
+        g_stub_voice_state = KOUKI_VOICE_RECORDING;
+    }
     if (g_abort_on_read_call > 0 && g_http_read_calls == g_abort_on_read_call) {
         kouki_speech_abort();
     }
@@ -502,6 +573,10 @@ esp_err_t esp_audio_play(const int16_t *data, int length, TickType_t ticks_to_wa
         g_first_pcm_len = (int)n;
     }
     g_play_calls++;
+    if (g_voice_recording_on_play_call > 0 && g_play_calls == g_voice_recording_on_play_call) {
+        /* Хук: запись стартовала посреди воспроизведения (п.28). */
+        g_stub_voice_state = KOUKI_VOICE_RECORDING;
+    }
 
     free(g_last_pcm);
     g_last_pcm = malloc((size_t)length);

@@ -9,6 +9,7 @@
 
 #include "app_config.h"
 #include "app_speech.h"
+#include "log_capture.h"
 
 extern int g_http_calls;
 extern int g_http_status;
@@ -27,6 +28,18 @@ extern bool g_busy_seen_in_http;
 extern bool g_playing_seen_in_http;
 
 extern int g_large_alloc_calls;
+extern int g_server_communicated_calls;
+extern long g_last_alloc_size;
+extern char g_http_content_type[128];
+extern int64_t g_http_hdr_len_override;
+extern int g_http_hdr_len_override_set;
+extern size_t g_http_synth_frames;
+extern int g_http_read_max_len;
+extern int g_voice_recording_on_read_call;
+extern int g_voice_recording_on_play_call;
+extern int g_silence_calls;
+extern int g_silence_ms[16];
+extern int g_audio_out_abort_calls;
 
 extern int g_play_calls;
 extern int g_play_bytes[128];
@@ -146,6 +159,12 @@ static void test_play_mono_stereo_and_refusals(void)
           "kouki_wake_mute(800) called once outside audio_out lock");
     CHECK(g_busy_seen_in_http && !g_playing_seen_in_http,
           "kouki_speech_busy() true during HTTP while kouki_speech_is_playing() false");
+    /* Пункт 27 ревью П10 (мутант по Content-Type): сервер ждёт JSON. */
+    CHECK(strcmp(g_http_content_type, "application/json") == 0,
+          "запрос речи уходит с Content-Type: application/json");
+    /* Пункт 27 (мутант m02): успешный ответ тоже отмечает связь с сервером. */
+    CHECK(g_server_communicated_calls == 1,
+          "ответ 200 отмечает связь с сервером (mark_server_communicated)");
     CHECK(g_audio_calls_while_playing == 1 && g_audio_calls_while_busy == 2,
           "is_playing() active on PCM chunk only, busy() active on both chunk and tail");
     CHECK(g_large_alloc_calls == 0, "Small Content-Length WAV skips 2.4MB PSRAM alloc");
@@ -164,8 +183,21 @@ static void test_play_mono_stereo_and_refusals(void)
 
     fake_speech_reset();
     g_http_status = 503;
+    kouki_test_log_clear();
     CHECK(kouki_speech_play("нет") == ESP_ERR_INVALID_RESPONSE && g_play_calls == 0 && g_large_alloc_calls == 0 && g_wake_mute_calls == 0,
           "HTTP 503 skips 2.4MB PSRAM alloc, plays nothing, no wake mute");
+    /*
+     * Пункт 26 ревью П10 (мутант m01): тело с кодом != 200 не парсится как
+     * WAV, а уходит в лог ЦЕЛИКОМ с кодом ответа — иначе причина отказа
+     * («озвучивание не подключено» на сервере) не видна в консоли станции.
+     */
+    CHECK(kouki_test_log_contains("озвучивание недоступно: HTTP 503"),
+          "лог называет код ответа, а не только факт отказа");
+    CHECK(kouki_test_log_contains("Озвучивание не подключено."),
+          "лог несёт тело ответа сервера (причину), а не только код");
+    CHECK(g_server_communicated_calls == 1,
+          "код 503 всё равно отмечает связь с сервером как состоявшуюся");
+    CHECK(g_play_calls == 0 && g_large_alloc_calls == 0, "тело ошибки не разбирается как WAV");
 
     fake_speech_reset();
     fake_http_set_samples(samples, 2);
@@ -205,6 +237,185 @@ static void test_chunked_playback_and_phrase_splitting(void)
     for (int i = 0; i < g_http_body_count; i++) {
         CHECK(utf8_valid(g_http_bodies[i]), "Each phrase HTTP JSON body is valid UTF-8");
     }
+}
+
+/*
+ * Пункт 27 ревью П10 (мутанты m03/m05/m06/m36): границы буфера ответа.
+ *
+ * Тело ответа выделяется по Content-Length с зажимом [4096, kBufCap]: слишком
+ * маленькая длина не должна приводить к микроскопической аллокации, а длина
+ * около kReadCap — к выходу за kBufCap (2.4 МБ PSRAM).
+ */
+static void test_response_buffer_bounds(void)
+{
+    const int16_t samples[] = {1, 2, 3, 4};
+
+    // Маленький Content-Length: alloc_cap зажимается снизу до 4096.
+    fake_speech_reset();
+    fake_http_set_samples(samples, 4);
+    g_http_hdr_len_override_set = 1;
+    g_http_hdr_len_override = 52;  /* ровно WAV на 4 сэмпла */
+    CHECK(kouki_speech_play("маленький ответ") == ESP_OK, "короткий ответ проигран");
+    CHECK(g_last_alloc_size == 4096,
+          "аллокация под маленький ответ зажата снизу 4096 байт");
+
+    // Content-Length у верхней границы kReadCap: alloc_cap = 2*len+64 больше
+    // kBufCap, поэтому зажимается ровно до kBufCap (2457600), а не 2457664.
+    fake_speech_reset();
+    fake_http_set_samples(samples, 4);
+    g_http_hdr_len_override_set = 1;
+    g_http_hdr_len_override = (int64_t)(1200u * 1024u);
+    g_http_read_chunk_cap = 4096;
+    CHECK(kouki_speech_play("ответ у границы") == ESP_OK, "ответ у границы прочитан");
+    CHECK(g_last_alloc_size == (long)(2u * 1200u * 1024u),
+          "аллокация зажата сверху kBufCap = 2*kReadCap");
+
+    // Тело больше kReadCap по Content-Length — отказ без чтения и без PSRAM.
+    fake_speech_reset();
+    fake_http_set_samples(samples, 4);
+    g_http_hdr_len_override_set = 1;
+    g_http_hdr_len_override = (int64_t)(1200u * 1024u) + 1;
+    kouki_test_log_clear();
+    CHECK(kouki_speech_play("слишком большой") == ESP_ERR_INVALID_RESPONSE,
+          "Content-Length больше kReadCap -> ESP_ERR_INVALID_RESPONSE");
+    CHECK(kouki_test_log_contains("ответ речи слишком большой"),
+          "лог называет превышение размера ответа");
+    CHECK(g_large_alloc_calls == 0 && g_play_calls == 0, "PSRAM не выделяется, звука нет");
+
+    // Чтение всегда кусками не больше 4096 байт.
+    fake_speech_reset();
+    int16_t big[8000];
+    for (int i = 0; i < 8000; i++) {
+        big[i] = (int16_t)i;
+    }
+    fake_http_set_samples(big, 8000);
+    CHECK(kouki_speech_play("большой ответ") == ESP_OK, "большой ответ проигран");
+    CHECK(g_http_read_max_len <= 4096,
+          "чтение тела идёт кусками не больше 4096 байт");
+}
+
+/*
+ * Пункт 28 ревью П10 (мутанты m13/m16/m20): запись во время воспроизведения,
+ * точная межфразовая пауза и пустой текст.
+ */
+static void test_recording_preempts_and_pauses(void)
+{
+    // (а) Запись началась посреди воспроизведения: воспроизведение прерывается
+    // до финальной паузы и без кулдауна wake.
+    fake_speech_reset();
+    int16_t frames[4000];
+    memset(frames, 0x22, sizeof(frames));
+    fake_http_set_samples(frames, 4000);
+    g_voice_recording_on_play_call = 2;
+    CHECK(kouki_speech_play("Прерывание записью") == ESP_ERR_INVALID_STATE,
+          "старт записи во время воспроизведения прерывает озвучивание");
+    CHECK(g_play_calls == 2, "доигран ровно один чанк до проверки состояния");
+    CHECK(g_silence_calls == 0 && g_wake_mute_calls == 0,
+          "прерванная речь не добавляет хвост и не глушит wake");
+
+    // (б) Запись началась во время загрузки WAV: play не начинается вовсе.
+    fake_speech_reset();
+    fake_http_set_samples(frames, 4000);
+    g_voice_recording_on_read_call = 2;
+    CHECK(kouki_speech_play("Запись во время загрузки") == ESP_ERR_INVALID_STATE,
+          "запись во время загрузки WAV отменяет воспроизведение");
+    CHECK(g_play_calls == 0 && g_silence_calls == 0, "ни одного блока звука не отдано");
+
+    // (в) Межфразовая пауза ровно 150 мс, финальная — 250 мс.
+    fake_speech_reset();
+    const int16_t ping[] = {7, -7};
+    fake_http_set_samples(ping, 2);
+    const char *two =
+        "Первое предложение достаточно длинное для проверки паузы между фразами. "
+        "Второе предложение тоже достаточно длинное и заканчивается точкой.";
+    CHECK(kouki_speech_play(two) == ESP_OK, "две фразы проиграны");
+    CHECK(g_http_calls == 2, "на две фразы ушло два запроса");
+    CHECK(g_silence_calls == 2 && g_silence_ms[0] == 150 && g_silence_ms[1] == 250,
+          "между фразами ровно 150 мс тишины, после речи — 250 мс");
+
+    // (г) Пустой текст — не ошибка и не сеть.
+    fake_speech_reset();
+    CHECK(kouki_speech_play("") == ESP_OK && g_http_calls == 0 && g_play_calls == 0,
+          "пустой текст не обращается к серверу и не играет");
+    CHECK(kouki_speech_play(NULL) == ESP_OK && g_http_calls == 0,
+          "NULL-текст не обращается к серверу");
+}
+
+/*
+ * Пункт 29 ревью П10 (мутанты m23/m26/m27/m29): abort доходит до кодека,
+ * busy/is_playing живут ровно вокруг своей фазы.
+ */
+static void test_abort_reaches_codec_and_status(void)
+{
+    fake_speech_reset();
+    CHECK(g_audio_out_abort_calls == 0, "abort кодека не звался до теста");
+    kouki_speech_abort();
+    CHECK(g_audio_out_abort_calls == 1,
+          "kouki_speech_abort() доходит до kouki_audio_out_abort (мутант m23)");
+
+    // busy() виден на время HTTP и на время хвоста, is_playing() — только на
+    // блоке PCM: это разные состояния, и подмена одного другим ломается.
+    fake_speech_reset();
+    const int16_t ping[] = {1, -1};
+    fake_http_set_samples(ping, 2);
+    CHECK(kouki_speech_play("статусы") == ESP_OK, "простое озвучивание");
+    CHECK(g_busy_seen_in_http && !g_playing_seen_in_http,
+          "во время HTTP busy() да, is_playing() нет (мутанты m26/m27)");
+    CHECK(g_audio_calls_while_busy == g_play_calls,
+          "кодек вызывается только когда busy() уже взят");
+    CHECK(!kouki_speech_is_playing() && !kouki_speech_busy() && !kouki_speech_worker_active(),
+          "после возврата все три состояния сняты (мутант m29)");
+}
+
+/*
+ * Пункт 30 ревью П10: таймауты заголовков/тела, пустое тело, overflow при
+ * неизвестной длине и признак обрезки в логе.
+ */
+static void test_timeouts_and_unbounded_body(void)
+{
+    // (а) Заголовки не приходят: 15000 мс суммарно, затем диагностика отказа.
+    fake_speech_reset();
+    const int16_t ping[] = {3, -3};
+    fake_http_set_samples(ping, 2);
+    /* 20 отказов по 1000 мс: потолок 15000 мс срабатывает на 16-й попытке,
+     * и заголовки уже не спрашиваются. При поднятом потолке (мутант) цикл
+     * дошёл бы до 20-й попытки и получил заголовки — значит, отказ бы не
+     * наступил, и проверка различает варианты. */
+    g_http_hdr_eagain_left = 20;
+    kouki_test_log_clear();
+    CHECK(kouki_speech_play("зависли заголовки") == ESP_ERR_INVALID_RESPONSE,
+          "таймаут заголовков -> ESP_ERR_INVALID_RESPONSE");
+    CHECK(kouki_test_log_count() > 0, "отказ заголовков залогирован");
+
+    // (б) Тело отдаётся по байту с EAGAIN: 15000 мс на всё чтение, отказ.
+    fake_speech_reset();
+    fake_http_set_samples(ping, 2);
+    g_http_read_eagain_left = 100;
+    CHECK(kouki_speech_play("зависло тело") == ESP_ERR_INVALID_RESPONSE,
+          "таймаут чтения тела -> ESP_ERR_INVALID_RESPONSE");
+    CHECK(g_play_calls == 0, "звук не начат после таймаута тела");
+
+    // (в) Пустое тело (0 байт прочитано): отказ с объяснением в логе.
+    fake_speech_reset();
+    fake_http_set_samples(ping, 2);
+    g_http_read_chunk_cap = 0;
+    kouki_test_log_clear();
+    CHECK(kouki_speech_play("пустое тело") == ESP_ERR_INVALID_RESPONSE,
+          "пустое тело -> ESP_ERR_INVALID_RESPONSE");
+    CHECK(kouki_test_log_contains("пустое или слишком большое тело"),
+          "лог отличает пустое тело от испорченного WAV");
+
+    // (г) Неизвестная длина (chunked) и тело больше kReadCap: чтение
+    // ограничено kReadCap, лишний байт ловится пробой и попадает в лог.
+    fake_speech_reset();
+    g_http_hdr_len_override_set = 1;
+    g_http_hdr_len_override = 0;
+    g_http_synth_frames = 700000;  /* 1.4 МБ > kReadCap */
+    kouki_test_log_clear();
+    CHECK(kouki_speech_play("без длины") == ESP_ERR_INVALID_RESPONSE,
+          "тело больше kReadCap при неизвестной длине -> ESP_ERR_INVALID_RESPONSE");
+    CHECK(kouki_test_log_contains(", обрезано"),
+          "лог помечает обрезанное тело");
 }
 
 static void usleep_ms(int ms)
@@ -334,6 +545,10 @@ int main(void)
     test_play_mono_stereo_and_refusals();
     test_chunked_playback_and_phrase_splitting();
     test_generation_abort_and_supersede();
+    test_response_buffer_bounds();
+    test_recording_preempts_and_pauses();
+    test_abort_reaches_codec_and_status();
+    test_timeouts_and_unbounded_body();
     printf("RESULTS: %d/%d checks passed (0 failures)\n", g_tests_passed, g_tests_run);
     return 0;
 }
