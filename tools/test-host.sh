@@ -191,6 +191,12 @@ run "config mock stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
     -c "$CFG_MOCK/config_stubs.c" -o "$OBJ_DIR/config_stubs.o"
 run "config mock root pem" "$CC" -std=gnu11 -Wall -Wextra -I"$CFG_MOCK" \
     -c "$CFG_MOCK/root_pem.c" -o "$OBJ_DIR/root_pem.o"
+# Перехват ESP_LOG* для стендов, которым нужна ПРИЧИНА ветки, а не только её
+# наличие: заглушки esp_log.h без этого флага пишут в `if (0)`. Объект
+# линкуется только в такие стенды (http, ota, setup), поэтому символы
+# kouki_test_log_* не нужны остальным.
+run "log capture" "$CC" -std=gnu11 -Wall -Wextra -I"$SUPPORT" -DKOUKI_TEST_LOG_CAPTURE \
+    -c "$SUPPORT/log_capture.c" -o "$OBJ_DIR/log_capture.o"
 run "config build" "$CXX" -std=c++17 -Wall -Wextra \
     -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
     -DKOUKI_TEST_CERT_PATH="\"$MAIN/certs/kouki-local-root.pem\"" \
@@ -280,26 +286,29 @@ HTTP_MOCK="$SUPPORT/http_mock"
 # Стенд линкует настоящий app_config.cpp (нужен kouki::config() для pinned CA),
 # поэтому моки NVS/mbedtls берём из config_mock, а esp_http_client — из http_mock.
 # Собирается дважды: CONFIG_KOUKI_ALLOW_HTTP=1 (sim) и =0 (дефолт Kconfig).
+#
+# Оба варианта включают -DKOUKI_TEST_LOG_CAPTURE: без него заглушки esp_log.h
+# пустые (if (0)), и причину ветки (https-лог, 401, отказ NVS) не проверить.
 run "http mock" "$CC" -std=gnu11 -Wall -Wextra -I"$HTTP_MOCK" -I"$CFG_MOCK" \
     -c "$HTTP_MOCK/http_mock.c" -o "$OBJ_DIR/http_mock.o"
 run "http build (allow)" "$CXX" -std=c++17 -Wall -Wextra \
     -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
-    -DHTTP_EXPECT_ALLOW_HTTP=1 \
+    -DHTTP_EXPECT_ALLOW_HTTP=1 -DKOUKI_TEST_LOG_CAPTURE \
     "$TEST/test_http.cpp" \
     "$MAIN/app_http.cpp" \
     "$MAIN/app_config.cpp" \
-    "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/http_mock.o" "$OBJ_DIR/log_capture.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -o "$OBJ_DIR/test_http_bin"
 run "http run (allow)" "$OBJ_DIR/test_http_bin"
 
 run "http build (deny)" "$CXX" -std=c++17 -Wall -Wextra \
     -I"$HTTP_MOCK/deny" -I"$HTTP_MOCK" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
-    -DHTTP_EXPECT_ALLOW_HTTP=0 \
+    -DHTTP_EXPECT_ALLOW_HTTP=0 -DKOUKI_TEST_LOG_CAPTURE \
     "$TEST/test_http.cpp" \
     "$MAIN/app_http.cpp" \
     "$MAIN/app_config.cpp" \
-    "$OBJ_DIR/http_mock.o" \
+    "$OBJ_DIR/http_mock.o" "$OBJ_DIR/log_capture.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -o "$OBJ_DIR/test_http_deny_bin"
 run "http run (deny)" "$OBJ_DIR/test_http_deny_bin"

@@ -14,6 +14,7 @@
 
 #include "app_config.hpp"
 #include "app_http.h"
+#include "log_capture.h"
 #include "app_http.hpp"
 #include "esp_http_client.h"
 #include "esp_tls_errors.h"
@@ -139,25 +140,46 @@ static void test_new_client_https()
 
 static void test_on_connected()
 {
-    std::printf("[TEST] 3. on_connected: https логируется, прочее — нет...\n");
+    std::printf("[TEST] 3. on_connected: логирует только https...\n");
 
-    // Функция только логирует: проверяем, что вызовы не падают и фасад ходит
-    // в тот же экземпляр, что и класс.
+    /*
+     * Пункт 5 ревью П4. Раньше здесь стояли два CHECK(true, ...), которые не
+     * могли упасть, а мутант m14 («логировать всегда») выживал. Теперь стенд
+     * собирается с -DKOUKI_TEST_LOG_CAPTURE, и текст лога виден: https пишет
+     * «https: server cert chain ok», http:// и NULL — молчат.
+     */
+    kouki_test_log_clear();
     kouki_http_on_connected("https://example.test");
-    kouki_http_on_connected("http://example.test");
-    kouki_http_on_connected(NULL);
-    kouki::http().on_connected("https://example.test");
-    CHECK(true, "on_connected tolerates https/http/NULL");
+    CHECK(kouki_test_log_count() == 1, "https: ровно одна строка лога");
+    CHECK(kouki_test_log_contains("https: server cert chain ok"),
+          "https: текст лога про цепочку сертификата");
 
-    // Колбэк ON_CONNECTED, установленный модулем, зовёт метод экземпляра.
+    kouki_test_log_clear();
+    kouki_http_on_connected("http://example.test");
+    CHECK(kouki_test_log_count() == 0, "http:// не логирует https-ветку");
+
+    kouki_test_log_clear();
+    kouki_http_on_connected(NULL);
+    CHECK(kouki_test_log_count() == 0, "NULL url не логирует");
+
+    // Класс ведёт себя так же, как фасад (один экземпляр).
+    kouki_test_log_clear();
+    kouki::http().on_connected("https://example.test");
+    CHECK(kouki_test_log_contains("https: server cert chain ok"),
+          "метод класса логирует то же");
+
+    // Колбэк ON_CONNECTED, установленный модулем, зовёт метод экземпляра и
+    // тоже доходит до лога — то есть событие реально подключено.
     http_mock_reset();
+    kouki_test_log_clear();
     esp_http_client_config_t cfg;
     std::memset(&cfg, 0, sizeof(cfg));
     cfg.url = "https://example.test/api/voice";
     esp_http_client_handle_t client = NULL;
     CHECK(kouki_http_new_client(&cfg, &client) == ESP_OK, "client for event test");
     http_mock_fire_connected();
-    CHECK(true, "default event handler handles HTTP_EVENT_ON_CONNECTED");
+    CHECK(kouki_test_log_contains("https: server cert chain ok"),
+          "ON_CONNECTED доводит url до on_connected и до лога");
     esp_http_client_cleanup(client);
 }
 
@@ -253,6 +275,38 @@ static void test_diagnose_connection()
     CHECK(http_mock_tls_error_calls() == 0, "no TLS query for NULL buffer");
     kouki_http_diagnose_error(NULL, "https://example.test", ESP_FAIL, buf, 0);
     CHECK(http_mock_tls_error_calls() == 0, "no TLS query for zero length");
+
+    /*
+     * Пункт 4 ревью П4 (мутант m8): guard `err_buf == NULL || max_len == 0`.
+     * Проверялся только max_len == 0. Кейс «NULL-буфер при max_len > 0» без
+     * guard роняет процесс (snprintf(NULL, 128, ...)), то есть exit 139 —
+     * именно это и наблюдал ревьюер. Здесь вызов обязан просто вернуться.
+     */
+    http_mock_reset();
+    http_mock_set_tls_error(0x2700, 0);
+    kouki_http_diagnose_error(NULL, "https://example.test", ESP_FAIL, NULL, 128);
+    CHECK(true, "diagnose_error(NULL, max_len=128) вернулся без падения");
+    /*
+     * И самое важное: при NULL-буфере модуль даже не должен ходить в клиент
+     * за TLS-ошибкой — guard стоит ДО всей диагностики. Без guard код упал бы
+     * уже после этого запроса, поэтому проверять «0 вызовов» осмысленно
+     * только вместе с отсутствием падения выше.
+     */
+    CHECK(http_mock_tls_error_calls() == 0,
+          "при NULL-буфере TLS-ошибка даже не запрашивается");
+
+    // Тот же guard для клиента с реальным handle.
+    http_mock_reset();
+    esp_http_client_config_t cfg2;
+    std::memset(&cfg2, 0, sizeof(cfg2));
+    cfg2.url = "https://example.test/api";
+    esp_http_client_handle_t client2 = NULL;
+    CHECK(kouki_http_new_client(&cfg2, &client2) == ESP_OK, "client for NULL-buffer case");
+    http_mock_set_tls_error(0x2700, 0);
+    kouki_http_diagnose_error(client2, cfg2.url, ESP_FAIL, NULL, 64);
+    CHECK(http_mock_tls_error_calls() == 0,
+          "с client handle, но NULL-буфером: TLS не запрашивается");
+    esp_http_client_cleanup(client2);
 }
 
 // --------------------------------------------------- фасад и экземпляр ----
