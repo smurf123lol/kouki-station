@@ -495,6 +495,50 @@ static void test_tone_fade()
 #endif
 }
 
+/**
+ * Пункт 12 ревью П5 (мутант a17): abort() освобождает владеющие элементы.
+ *
+ * abort() вычерпывает очередь и для каждого Item с dynamically_allocated
+ * освобождает data (app_audio_out.cpp:373-377). Мутант a17 убирает этот free:
+ * очередь пустеет (счётчик и is_busy это не различают), но буферы утекают.
+ * Поэтому проверка идёт по дельте занятой кучи, как в пункте 9.
+ */
+static void test_abort_frees_owned()
+{
+    std::printf("[TEST] 4б. abort: владеющие элементы очереди освобождены...\n");
+
+    void *warm = malloc(3200);
+    free(warm);  // прогрев арены
+
+    const long before = heap_in_use();
+
+    // Набиваем очередь элементами, которыми владеет очередь: их должен
+    // освободить abort, а не вызывающий (владение уже передано).
+    const int count = 5;
+    for (int i = 0; i < count; i++) {
+        int16_t *owned = (int16_t *)malloc(3200);
+        CHECK(owned != NULL, "владеющий элемент выделен");
+        owned[0] = (int16_t)i;
+        CHECK(kouki_audio_out_enqueue_pcm(owned, 3200, true) == ESP_OK,
+              "владеющий элемент поставлен в очередь");
+    }
+    CHECK(kouki_audio_out_is_busy(), "очередь непуста перед abort");
+
+    kouki_audio_out_abort();
+    const long after = heap_in_use();
+
+    CHECK(!kouki_audio_out_is_busy(), "после abort очередь пуста");
+    /*
+     * На один-два элемента worker мог успеть отдать блок кодеку — их
+     * освобождает ветка воспроизведения. Всё, что осталось в очереди,
+     * обязан освободить abort. Без этого free прирост кучи близок к
+     * count * 3200; с ним — нулевой или отрицательный.
+     */
+    CHECK(after - before <= 2 * 3200,
+          "abort освободил владеющие элементы очереди (куча не выросла на всю очередь)");
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "очередь разошлась после abort");
+}
+
 // ------------------------------------------------------------------- Tone --
 
 static void test_tone_pattern()
@@ -584,6 +628,7 @@ int main()
     test_queue_order();
     test_silence();
     test_abort();
+    test_abort_frees_owned();
     test_busy_idle();
     test_direct_play();
     test_enqueue_guards();
