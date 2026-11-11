@@ -12,6 +12,10 @@
 #include <cstring>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #include "app_audio_out.h"
 #include "app_audio_out.hpp"
 #include "app_tone.h"
@@ -249,6 +253,87 @@ static void test_enqueue_guards()
     audio_mock_set_delay_us(0);
 }
 
+/**
+ * Сколько байт сейчас занято в куче (для проверки утечки во владеющем enqueue).
+ *
+ * uordblks считает занятые пользователем блоки; после free он возвращается к
+ * прежнему значению, поэтому годится как дельта «до/после». На платформах без
+ * mallinfo2 дельта всегда 0, и проверка утечки превращается в no-op — тест
+ * остаётся корректным, но слабее (см. README стенда).
+ */
+static long heap_in_use()
+{
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+    struct mallinfo2 mi = mallinfo2();
+    return (long)mi.uordblks;
+#else
+    return 0;
+#endif
+}
+
+/**
+ * Пункт 9 ревью П5 (ВАЖНЫЙ): enqueue_pcm с владением при ESP_ERR_TIMEOUT
+ * обязан освободить буфер.
+ *
+ * Мутант a19 убирает free(data) в ветке переполнения — вызывающий уже отдал
+ * владение, поэтому буфер не освобождает никто: утечка heap_delta 54672 ->
+ * 77184 (+22512 = 7 x 3200). Проверка идёт по дельте занятой кучи, а не по
+ * счётчику free в моке: free вызывает сам модуль, а не заглушка.
+ */
+static void test_enqueue_ownership_on_timeout()
+{
+    std::printf("[TEST] 7б. Переполнение с владением: буфер освобождён...\n");
+
+    audio_mock_reset();
+    const size_t elem = 3200;
+    // Разогрев: первый malloc в процессе тянет за собой арену, её рост дал бы
+    // ложную дельту. Выделяем и сразу освобождаем буфер того же размера.
+    void *warm = malloc(elem);
+    free(warm);
+
+    audio_mock_set_delay_us(200 * 1000);
+    kouki_audio_out_lock();
+
+    // Набиваем очередь без владения: эти буферы статический массив, их никто
+    // не освобождает, и на дельту они не влияют.
+    static int16_t filler[kouki::AudioOut::kQueueLen + 4][3200];
+    std::memset(filler, 1, sizeof(filler));
+    int queued = 0;
+    for (size_t i = 0; i < kouki::AudioOut::kQueueLen + 4; i++) {
+        if (kouki_audio_out_enqueue_pcm(filler[i], sizeof(filler[i]), false) != ESP_OK) {
+            break;
+        }
+        queued++;
+    }
+    CHECK(queued > 0, "очередь заполнена элементами без владения");
+
+    const long before = heap_in_use();
+    int timed_out = 0;
+    long allocated_total = 0;
+    // Пока очередь полна, каждый владеющий элемент обязан либо встать в
+    // очередь, либо вернуть ESP_ERR_TIMEOUT и освободить буфер.
+    for (int i = 0; i < 7; i++) {
+        int16_t *owned = (int16_t *)malloc(elem);
+        CHECK(owned != NULL, "буфер под владеющий элемент выделен");
+        allocated_total += (long)elem;
+        if (kouki_audio_out_enqueue_pcm(owned, elem, true) == ESP_ERR_TIMEOUT) {
+            timed_out++;
+        }
+    }
+    const long after = heap_in_use();
+    kouki_audio_out_unlock();
+    audio_mock_set_delay_us(0);
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "очередь разошлась");
+
+    CHECK(timed_out > 0, "часть владеющих элементов получила ESP_ERR_TIMEOUT");
+    // Принятые в очередь буферы ещё висят в очереди (worker заблокирован на
+    // кодеке) — на них куча законно выросла. Отказные освобождает сам
+    // enqueue_pcm, и именно их мутант a19 теряет.
+    const long allowed = allocated_total - (long)timed_out * (long)elem;
+    CHECK(after - before <= allowed,
+          "отказные буферы освобождены: прирост кучи не больше принятых в очередь");
+}
+
 // ------------------------------------------------------------------- Tone --
 
 static void test_tone_pattern()
@@ -334,6 +419,7 @@ int main()
     test_busy_idle();
     test_direct_play();
     test_enqueue_guards();
+    test_enqueue_ownership_on_timeout();
     test_tone_pattern();
     test_facade();
 
