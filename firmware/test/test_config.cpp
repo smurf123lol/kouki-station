@@ -246,6 +246,23 @@ void test_save_complete()
     TEST_ASSERT(kouki_config_set_wake_threshold(80) == ESP_OK, "set_wake_threshold");
     kouki_config_set_silent(true);
 
+    // Пункт 1 ревью П2: ca_pem засевается ДО save(), иначе проверка «пустой
+    // ca_pem удалён из NVS» тривиальна — ключа в NVS и не было. Сеттер
+    // принимает только валидный PEM, поэтому подкладываем настоящий.
+    char seeded_pem[256];
+    std::snprintf(seeded_pem, sizeof(seeded_pem),
+                  "-----BEGIN CERTIFICATE-----\n"
+                  "MIIBozCCAUmgAwIBAgIQbGdVNmq1SQsDHWfLavqiXDAKBggqhkjOPQQDAjAw\n"
+                  "-----END CERTIFICATE-----\n");
+    TEST_ASSERT(kouki_config_set_ca_pem(seeded_pem) == ESP_OK, "ca_pem засеян перед save()");
+    TEST_ASSERT(kouki_config_save() == ESP_OK, "save() с ca_pem — ESP_OK");
+    const char *saved_pem = nullptr;
+    TEST_ASSERT(nvs_mock_get_str(kNs, "ca_pem", &saved_pem) &&
+                std::strcmp(saved_pem, seeded_pem) == 0, "ca_pem записан в NVS как задан");
+
+    // Стираем ca_pem через модуль: следующий save() обязан удалить ключ.
+    TEST_ASSERT(kouki_config_set_ca_pem("") == ESP_OK, "ca_pem очищен перед save()");
+
     TEST_ASSERT(kouki_config_save() == ESP_OK, "save() полной конфигурации — ESP_OK");
 
     uint8_t u8 = 0;

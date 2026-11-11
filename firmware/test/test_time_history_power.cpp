@@ -30,6 +30,34 @@ static int g_passed = 0;
 
 // ---------------------------------------------------------------- Time -----
 
+/**
+ * Подмена ::time() для кейса «часы ещё не синхронизированы».
+ *
+ * Time::is_synced() на хосте смотрит два признака: атомарный m_synced (его
+ * ставит колбэк SNTP) и эпоху от ::time() против порога 1700000000. Хост-часы
+ * всегда синхронизированы, поэтому единственный способ добраться до ветки
+ * «не синхронизировано» — вернуть из ::time() значение ниже порога.
+ * Пока g_fake_now >= 0, подмена действует на весь бинарник; каждый тест обязан
+ * вернуть -1, иначе следующие увидят 1970 год.
+ */
+static long g_fake_now = -1;
+
+extern "C" time_t time(time_t *out)
+{
+    if (g_fake_now >= 0) {
+        if (out != nullptr) {
+            *out = (time_t)g_fake_now;
+        }
+        return (time_t)g_fake_now;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    if (out != nullptr) {
+        *out = ts.tv_sec;
+    }
+    return ts.tv_sec;
+}
+
 static void test_time() {
     std::printf("[TEST] 1. Time: класс, TZ, форматирование, ошибки...\n");
 
@@ -88,6 +116,31 @@ static void test_time() {
     kouki::timekeeper().format_hm(hm2, sizeof(hm2));
     CHECK(std::strlen(hm2) == 5, "class format_hm matches facade");
     CHECK(std::strcmp(hm, hm2) == 0, "facade and class agree on format_hm");
+
+    // Пункт 3 ревью П3 (мутант t1): НЕсинхронизированное время.
+    // Свежий экземпляр Time (m_synced = false) + подменённая эпоха ниже порога
+    // дают ветку «не синхронизировано»: get() -> ESP_ERR_INVALID_STATE,
+    // format_hm -> "--:--", format_date -> "--".
+    g_fake_now = 1000;  // 1970 год, заведомо ниже порога 1700000000
+    {
+        kouki::Time unsynced;
+        CHECK(!unsynced.is_synced(), "свежий Time с эпохой 1970 не синхронизирован");
+        struct tm broken{};
+        CHECK(unsynced.get(&broken) == ESP_ERR_INVALID_STATE,
+              "get() при несинхронизированном времени -> ESP_ERR_INVALID_STATE");
+
+        char unset_hm[8] = {0};
+        unsynced.format_hm(unset_hm, sizeof(unset_hm));
+        CHECK(std::strcmp(unset_hm, "--:--") == 0,
+              "format_hm при несинхронизированном времени -> \"--:--\"");
+
+        char unset_date[8] = {0};
+        unsynced.format_date(unset_date, sizeof(unset_date));
+        CHECK(std::strcmp(unset_date, "--") == 0,
+              "format_date при несинхронизированном времени -> \"--\"");
+    }
+    g_fake_now = -1;  // важно: дальше идут тесты, которым нужна настоящая эпоха
+    CHECK(kouki_time_is_synced(), "после возврата реальных часов время снова синхронно");
 }
 
 // ------------------------------------------------------------- History -----
@@ -182,6 +235,41 @@ static void test_history() {
     kouki_history_clear();
     CHECK(kouki_history_count() == 0, "cleared");
     CHECK(!kouki_history_get(0, &item), "get(0) after clear -> false");
+
+    // Пункт 2 ревью П3 (мутант h5): повторный init() ПОСЛЕ заполнения не должен
+    // обнулять кольцо. Раньше оба init() вызывались до push, поэтому снятый
+    // guard `if (m_items != nullptr) return;` оставался незамеченным: тест
+    // просто не видел состояния, которое guard защищает.
+    for (int i = 1; i <= 3; i++) {
+        // Кириллица в UTF-8 занимает два байта на символ: «До повторного init N»
+        // это 33 байта, поэтому буфер заметно больше 32.
+        char t[64];
+        std::snprintf(t, sizeof(t), "До повторного init %d", i);
+        kouki_voice_result_t res = make_res(t, "", "ask", "", "");
+        kouki_history_push(&res);
+    }
+    CHECK(kouki_history_count() == 3, "три записи до повторного init");
+    const uint32_t version_before = kouki_history_version();
+
+    kouki_history_init();  // мутант h5 здесь обнулил бы head/count/version
+
+    CHECK(kouki_history_count() == 3, "повторный init() сохранил записи");
+    CHECK(kouki_history_version() == version_before, "повторный init() не сбросил версию");
+    CHECK(kouki_history_get(0, &item), "get(0) после повторного init");
+    CHECK(std::strcmp(item.transcript, "До повторного init 3") == 0,
+          "самая свежая запись на месте после повторного init");
+    CHECK(kouki_history_get(2, &item), "get(2) после повторного init");
+    CHECK(std::strcmp(item.transcript, "До повторного init 1") == 0,
+          "старейшая запись на месте после повторного init");
+
+    // И кольцо продолжает работать после этого init().
+    kouki_voice_result_t more = make_res("После init", "", "ask", "", "");
+    kouki_history_push(&more);
+    CHECK(kouki_history_count() == 4, "push после повторного init работает");
+    CHECK(kouki_history_version() == version_before + 1, "версия продолжает расти");
+
+    kouki_history_clear();
+    CHECK(kouki_history_count() == 0, "очищено перед следующим блоком");
 }
 
 // --------------------------------------------------------------- Power -----
