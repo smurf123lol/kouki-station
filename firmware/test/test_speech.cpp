@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "app_config.h"
 #include "app_speech.h"
@@ -137,6 +138,21 @@ void test_wav_parse_boundaries()
     // Короче заголовка и пустые аргументы.
     CHECK(kouki::Speech::wav_parse(wav, 11, &info) == ESP_ERR_INVALID_RESPONSE,
           "11 байт -> ESP_ERR_INVALID_RESPONSE");
+
+    /* Буфер РОВНО 11 байт в куче: здесь memcmp(wav + 8, "WAVE", 4) при
+     * недостаточном guard-е (len < 8 вместо len < 12) выходит за границу
+     * переданного буфера и под ASAN даёт heap-buffer-overflow. Массив на
+     * стеке выше такую ошибку скрывает: чтение остаётся внутри массива.
+     * Без ASAN кейс честен, но слабее — он проверяет только код возврата
+     * (см. «Границы wav_parse» в firmware/test/README.md). */
+    {
+        std::vector<uint8_t> tiny(11, 0);
+        memcpy(tiny.data(), "RIFF", 4);
+        memcpy(tiny.data() + 8, "WAV", 3);  // четвёртый байт WAVE — уже за буфером
+        CHECK(kouki::Speech::wav_parse(tiny.data(), tiny.size(), &info) ==
+                  ESP_ERR_INVALID_RESPONSE,
+              "11 байт в куче -> ESP_ERR_INVALID_RESPONSE (под ASAN граница буфера)");
+    }
     CHECK(kouki::Speech::wav_parse(nullptr, len, &info) == ESP_ERR_INVALID_ARG,
           "wav==NULL -> ESP_ERR_INVALID_ARG");
     CHECK(kouki::Speech::wav_parse(wav, len, nullptr) == ESP_ERR_INVALID_ARG,
