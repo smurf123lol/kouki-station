@@ -40,6 +40,20 @@ static uint32_t s_auto_gw;
 static esp_err_t s_fail_init;
 static esp_err_t s_fail_timer_create;
 static esp_err_t s_fail_inactive_time;
+/* Пункт 15 ревью П7: заготовленные ошибки остальных шагов подъёма стека.
+ * Без них пять ESP_RETURN_ON_ERROR в app_wifi.cpp не наблюдаемы: мок всегда
+ * отвечал ESP_OK, и мутант «не вернуть ошибку» выживал. */
+static esp_err_t s_fail_netif_init;
+static esp_err_t s_fail_event_loop;
+static esp_err_t s_fail_set_mode;
+static esp_err_t s_fail_set_config;
+static esp_err_t s_fail_start;
+static esp_err_t s_fail_handler_register;
+/* Отказ регистрации именно этого события: WIFI_EVENT и IP_EVENT стоят две
+ * отдельные строки в bring_up_stack(), и общий однократный сбой проверял бы
+ * только первую — второй ESP_RETURN_ON_ERROR оставался бы без теста. */
+static esp_event_base_t s_fail_handler_base;
+static esp_err_t s_fail_handler_base_err = ESP_OK;
 
 static int s_init_calls;
 static int s_connect_calls;
@@ -115,6 +129,11 @@ void wifi_mock_fire_retry_timer(void)
 
 esp_err_t esp_event_loop_create_default(void)
 {
+    if (s_fail_event_loop != ESP_OK) {
+        const esp_err_t err = s_fail_event_loop;
+        s_fail_event_loop = ESP_OK;
+        return err;
+    }
     return ESP_OK;
 }
 
@@ -122,6 +141,19 @@ esp_err_t esp_event_handler_instance_register(esp_event_base_t event_base, int32
                                               esp_event_handler_t event_handler, void *event_handler_arg,
                                               esp_event_handler_instance_t *context)
 {
+    if (s_fail_handler_register != ESP_OK) {
+        const esp_err_t err = s_fail_handler_register;
+        s_fail_handler_register = ESP_OK;
+    s_fail_handler_base = NULL;
+    s_fail_handler_base_err = ESP_OK;
+        return err;
+    }
+    if (s_fail_handler_base != NULL && event_base == s_fail_handler_base && s_fail_handler_base_err != ESP_OK) {
+        const esp_err_t err = s_fail_handler_base_err;
+        s_fail_handler_base = NULL;
+        s_fail_handler_base_err = ESP_OK;
+        return err;
+    }
     if (s_handler_count >= MAX_HANDLERS) {
         return ESP_ERR_NO_MEM;
     }
@@ -159,6 +191,11 @@ esp_err_t esp_wifi_set_mode(wifi_mode_t mode)
 {
     s_set_mode_calls++;
     s_mode = mode;
+    if (s_fail_set_mode != ESP_OK) {
+        const esp_err_t err = s_fail_set_mode;
+        s_fail_set_mode = ESP_OK;
+        return err;
+    }
     return ESP_OK;
 }
 
@@ -166,6 +203,11 @@ esp_err_t esp_wifi_set_config(wifi_interface_t interface, const wifi_config_t *c
 {
     s_set_config_calls++;
     s_config_if = interface;
+    if (s_fail_set_config != ESP_OK) {
+        const esp_err_t err = s_fail_set_config;
+        s_fail_set_config = ESP_OK;
+        return err;
+    }
     if (config != NULL) {
         strncpy(s_ssid, (const char *)config->sta.ssid, sizeof(s_ssid) - 1);
         s_ssid[sizeof(s_ssid) - 1] = '\0';
@@ -187,6 +229,11 @@ esp_err_t esp_wifi_set_config(wifi_interface_t interface, const wifi_config_t *c
 esp_err_t esp_wifi_start(void)
 {
     s_start_calls++;
+    if (s_fail_start != ESP_OK) {
+        const esp_err_t err = s_fail_start;
+        s_fail_start = ESP_OK;
+        return err;
+    }
     if (s_fire_sta_start) {
         fire(WIFI_EVENT, WIFI_EVENT_STA_START, NULL);
     }
@@ -232,6 +279,11 @@ esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap_info)
 esp_err_t esp_netif_init(void)
 {
     s_netif_init_calls++;
+    if (s_fail_netif_init != ESP_OK) {
+        const esp_err_t err = s_fail_netif_init;
+        s_fail_netif_init = ESP_OK;
+        return err;
+    }
     return ESP_OK;
 }
 
@@ -353,6 +405,12 @@ void wifi_mock_reset(void)
     s_fail_init = ESP_OK;
     s_fail_timer_create = ESP_OK;
     s_fail_inactive_time = ESP_OK;
+    s_fail_netif_init = ESP_OK;
+    s_fail_event_loop = ESP_OK;
+    s_fail_set_mode = ESP_OK;
+    s_fail_set_config = ESP_OK;
+    s_fail_start = ESP_OK;
+    s_fail_handler_register = ESP_OK;
     s_init_calls = 0;
     s_connect_calls = 0;
     s_start_calls = 0;
@@ -411,6 +469,42 @@ void wifi_mock_fail_next_timer_create(esp_err_t err)
 void wifi_mock_fail_next_inactive_time(esp_err_t err)
 {
     s_fail_inactive_time = err;
+}
+
+void wifi_mock_fail_next_netif_init(esp_err_t err)
+{
+    s_fail_netif_init = err;
+}
+
+void wifi_mock_fail_next_event_loop(esp_err_t err)
+{
+    s_fail_event_loop = err;
+}
+
+void wifi_mock_fail_next_set_mode(esp_err_t err)
+{
+    s_fail_set_mode = err;
+}
+
+void wifi_mock_fail_next_set_config(esp_err_t err)
+{
+    s_fail_set_config = err;
+}
+
+void wifi_mock_fail_next_start(esp_err_t err)
+{
+    s_fail_start = err;
+}
+
+void wifi_mock_fail_next_handler_register(esp_err_t err)
+{
+    s_fail_handler_register = err;
+}
+
+void wifi_mock_fail_handler_register_for(esp_event_base_t base, esp_err_t err)
+{
+    s_fail_handler_base = base;
+    s_fail_handler_base_err = err;
 }
 
 int wifi_mock_init_calls(void) { return s_init_calls; }

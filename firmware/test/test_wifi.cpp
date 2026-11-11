@@ -12,6 +12,7 @@
 #include "app_config.h"
 #include "app_wifi.h"
 #include "app_wifi.hpp"
+#include "log_capture.h"
 #include "nvs_mock.h"
 #include "wifi_mock.h"
 
@@ -257,6 +258,218 @@ static void test_get_info()
     CHECK(rssi == 0, "без данных AP RSSI обнуляется");
 }
 
+/*
+ * Пункт 13 ревью П7 (мутанты m9/m11): отказ по конфигурации и второй guard SSID.
+ *
+ * Зонд ревьюера: оригинал даёт connect=259 (ESP_ERR_INVALID_STATE) и
+ * set_mode=0 set_config=0 start=0, а мутант со снятым guard-ом is_complete()
+ * доходит до станции (set_mode=1 set_config=1 start=1). Здесь отказ проверен
+ * именно по счётчикам: конфигурация неполная, но SSID в ней ЗАДАН — то есть
+ * отказ пришёл из is_complete(), а не из проверки пустого SSID.
+ */
+static void test_incomplete_config_with_ssid()
+{
+    std::printf("[TEST] 10. Неполная конфигурация с заданным SSID: отказ до станции...\n");
+
+    nvs_mock_reset();
+    nvs_mock_seed_u8(kNs, "cfg_ver", KOUKI_CONFIG_VERSION);
+    nvs_mock_seed_str(kNs, "wifi_ssid", "kouki-home");     // SSID есть
+    nvs_mock_seed_str(kNs, "wifi_pass", "secret-pass");
+    nvs_mock_seed_str(kNs, "srv_url", "http://192.168.1.20:5300");
+    nvs_mock_seed_str(kNs, "srv_token", "short");          // короче минимума 8
+    nvs_mock_seed_str(kNs, "dev_source", "station");
+    CHECK(kouki_config_init() == ESP_OK, "init() конфигурации");
+    CHECK(!kouki_config_is_complete(), "токен короче минимума — конфигурация неполная");
+    CHECK(std::strlen(kouki_config_get_wifi_ssid()) > 0, "SSID при этом задан");
+
+    wifi_mock_reset();
+    CHECK(kouki::wifi().connect() == ESP_ERR_INVALID_STATE,
+          "connect() с неполной конфигурацией -> ESP_ERR_INVALID_STATE");
+    CHECK(wifi_mock_set_mode_calls() == 0, "set_mode не звали: отказ до станции");
+    CHECK(wifi_mock_set_config_calls() == 0, "set_config не звали");
+    CHECK(wifi_mock_start_calls() == 0, "esp_wifi_start не звали");
+    CHECK(wifi_mock_connect_calls() == 0, "esp_wifi_connect не звали");
+
+    /*
+     * Второй guard (пустой SSID) недостижим через Config: is_complete() уже
+     * отвергает пустой SSID, поэтому снять его отдельно нельзя — он
+     * страховка на случай вызова configure_station() в обход connect().
+     * Фиксируем это как ограничение стенда, а не как проверенное поведение.
+     */
+    nvs_mock_reset();
+    nvs_mock_seed_u8(kNs, "cfg_ver", KOUKI_CONFIG_VERSION);
+    nvs_mock_seed_str(kNs, "wifi_ssid", "");               // пустой SSID
+    nvs_mock_seed_str(kNs, "srv_token", "0123456789abcdef");
+    nvs_mock_seed_str(kNs, "srv_url", "http://192.168.1.20:5300");
+    CHECK(kouki_config_init() == ESP_OK, "init() с пустым SSID");
+    CHECK(!kouki_config_is_complete(), "пустой SSID делает конфигурацию неполной");
+}
+
+/*
+ * Пункт 14 ревью П7 (мутант m14): открытая сеть без пароля.
+ * Мок запоминает threshold.authmode из esp_wifi_set_config, поэтому подмена
+ * «всегда WPA2_PSK» видна как значение, а не как «прошло без ошибки».
+ */
+static void test_open_network()
+{
+    std::printf("[TEST] 11. Открытая сеть без пароля: WIFI_AUTH_OPEN...\n");
+
+    nvs_mock_reset();
+    nvs_mock_seed_u8(kNs, "cfg_ver", KOUKI_CONFIG_VERSION);
+    nvs_mock_seed_str(kNs, "wifi_ssid", "kouki-open");
+    nvs_mock_seed_str(kNs, "srv_url", "http://192.168.1.20:5300");
+    nvs_mock_seed_str(kNs, "srv_token", "0123456789abcdef");
+    nvs_mock_seed_str(kNs, "dev_source", "station");
+    CHECK(kouki_config_init() == ESP_OK, "init() без пароля");
+    CHECK(kouki_config_is_complete(), "конфигурация без пароля полная");
+
+    wifi_mock_reset();
+    wifi_mock_set_fire_sta_start(true);
+    wifi_mock_set_auto_got_ip(true, kIp, kGw);
+    CHECK(kouki::wifi().connect() == ESP_OK, "connect() к открытой сети -> ESP_OK");
+    CHECK(std::strcmp(wifi_mock_ssid(), "kouki-open") == 0, "SSID открытой сети");
+    CHECK(std::strlen(wifi_mock_password()) == 0, "пароль пустой");
+    CHECK(wifi_mock_authmode() == WIFI_AUTH_OPEN, "без пароля — WIFI_AUTH_OPEN");
+}
+
+/*
+ * Пункт 15 ревью П7 (мутанты R1–R5 + inactive_time + event_loop): пути отказа
+ * подъёма стека. Каждый ESP_RETURN_ON_ERROR проверяется по коду возврата и по
+ * тому, что следующие шаги НЕ вызваны: иначе мутант «не вернуть ошибку» выживает.
+ */
+static void test_stack_failures()
+{
+    std::printf("[TEST] 12. Отказы стека: каждый шаг пробрасывает ошибку...\n");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_netif_init(ESP_ERR_NO_MEM);
+    CHECK(kouki::wifi().connect() == ESP_ERR_NO_MEM, "esp_netif_init: ошибка проброшена");
+    CHECK(wifi_mock_init_calls() == 0, "после отказа esp_netif_init стек не поднимают");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_init(ESP_FAIL);
+    CHECK(kouki::wifi().connect() == ESP_FAIL, "esp_wifi_init: ошибка проброшена");
+    CHECK(wifi_mock_handler_count() == 0, "после отказа esp_wifi_init обработчики не ставят");
+    CHECK(wifi_mock_set_mode_calls() == 0, "до станции дело не дошло");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_handler_register(ESP_ERR_NO_MEM);
+    CHECK(kouki::wifi().connect() == ESP_ERR_NO_MEM, "регистрация WIFI_EVENT: ошибка проброшена");
+    CHECK(wifi_mock_set_mode_calls() == 0, "без обработчиков станцию не настраивают");
+
+    /*
+     * Вторая регистрация (IP_EVENT) — отдельная строка и отдельный
+     * ESP_RETURN_ON_ERROR; однократный сброс её не задевает.
+     */
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_handler_register_for(IP_EVENT, ESP_ERR_INVALID_STATE);
+    CHECK(kouki::wifi().connect() == ESP_ERR_INVALID_STATE,
+          "регистрация IP_EVENT: ошибка проброшена");
+    CHECK(wifi_mock_handler_count() == 1, "WIFI_EVENT успел зарегистрироваться, IP_EVENT — нет");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_set_mode(ESP_ERR_INVALID_STATE);
+    CHECK(kouki::wifi().connect() == ESP_ERR_INVALID_STATE, "set_mode: ошибка проброшена");
+    CHECK(wifi_mock_set_config_calls() == 0, "после отказа set_mode конфигурацию не ставят");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_set_config(ESP_ERR_INVALID_ARG);
+    CHECK(kouki::wifi().connect() == ESP_ERR_INVALID_ARG, "set_config: ошибка проброшена");
+    CHECK(wifi_mock_start_calls() == 0, "после отказа set_config не стартуют");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_start(ESP_ERR_INVALID_STATE);
+    CHECK(kouki::wifi().connect() == ESP_ERR_INVALID_STATE, "esp_wifi_start: ошибка проброшена");
+    CHECK(wifi_mock_connect_calls() == 0, "без старта STA_START не приходит");
+
+    /*
+     * esp_event_loop_create_default: ESP_ERR_INVALID_STATE — «петля уже есть»,
+     * это НЕ отказ (IDF штатно возвращает его при повторной инициализации).
+     * ESP_FAIL — настоящий отказ, и он обязан прервать подъём стека.
+     */
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_event_loop(ESP_ERR_INVALID_STATE);
+    wifi_mock_set_fire_sta_start(true);
+    wifi_mock_set_auto_got_ip(true, kIp, kGw);
+    CHECK(kouki::wifi().connect() == ESP_OK,
+          "ESP_ERR_INVALID_STATE от esp_event_loop_create_default не считается отказом");
+    CHECK(wifi_mock_init_calls() == 1, "стек поднят дальше");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_event_loop(ESP_FAIL);
+    CHECK(kouki::wifi().connect() == ESP_FAIL, "настоящий отказ петли проброшен");
+    CHECK(wifi_mock_init_calls() == 0, "после отказа петли esp_wifi_init не зовут");
+
+    /*
+     * inactive_time: отказ НЕ фатален (T95 — оптимизация, не требование), но
+     * обязан оставить след в логе. Без перехвата эту ветку не проверить.
+     */
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_fail_next_inactive_time(ESP_ERR_NOT_SUPPORTED);
+    wifi_mock_set_fire_sta_start(true);
+    wifi_mock_set_auto_got_ip(true, kIp, kGw);
+    kouki_test_log_clear();
+    CHECK(kouki::wifi().connect() == ESP_OK, "отказ inactive_time не мешает подключению");
+    CHECK(wifi_mock_inactive_time() == 3, "попытка выставить 3 с была");
+    CHECK(kouki_test_log_contains("не удалось установить inactive_time"),
+          "отказ inactive_time попал в лог");
+    CHECK(kouki_test_log_contains("ESP_ERR_NOT_SUPPORTED"),
+          "в логе код ошибки, а не общая фраза");
+}
+
+/*
+ * Пункт 16 ревью П7 (мутанты m33/m7/m30): фасад, сброс счётчика повторов и
+ * нулевая длина IP-буфера.
+ */
+static void test_facade_retry_reset_and_zero_len()
+{
+    std::printf("[TEST] 13. Фасад connect(), сброс счётчика повторов, ip_len=0...\n");
+
+    seed_complete_config();
+    wifi_mock_reset();
+    wifi_mock_set_fire_sta_start(true);
+    wifi_mock_set_auto_got_ip(true, kIp, kGw);
+    CHECK(kouki_wifi_connect() == ESP_OK, "фасад kouki_wifi_connect() -> ESP_OK");
+    CHECK(wifi_mock_connect_calls() == 1, "фасад дошёл до esp_wifi_connect");
+    CHECK(kouki_wifi_is_connected(), "фасад видит связь");
+
+    // Серия обрывов копит счётчик: в логе должна быть «попытка 3».
+    kouki_test_log_clear();
+    for (int i = 0; i < 3; i++) {
+        wifi_mock_fire_event(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+    }
+    CHECK(kouki_test_log_contains("попытка 3"), "три обрыва — третья попытка в логе");
+
+    // GOT_IP обязан сбросить счётчик: следующий обрыв снова «попытка 1».
+    ip_event_got_ip_t ev = {};
+    ev.ip_info.ip.addr = kIp;
+    ev.ip_info.gw.addr = kGw;
+    wifi_mock_fire_event(IP_EVENT, IP_EVENT_STA_GOT_IP, &ev);
+    kouki_test_log_clear();
+    wifi_mock_fire_event(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+    CHECK(kouki_test_log_contains("попытка 1"),
+          "после GOT_IP счётчик повторов сброшен (мутант m7 не сбрасывал)");
+
+    // ip_len=0 при связи: адрес не запрашивают, буфер не трогают.
+    wifi_mock_fire_event(IP_EVENT, IP_EVENT_STA_GOT_IP, &ev);
+    char ip[32];
+    std::memset(ip, 'x', sizeof(ip));
+    const int before = wifi_mock_get_ip_info_calls();
+    CHECK(kouki::wifi().get_info(ip, 0, NULL) == ESP_OK, "ip_len=0 -> ESP_OK");
+    CHECK(wifi_mock_get_ip_info_calls() == before, "при ip_len=0 адрес не запрашивали");
+    CHECK(ip[0] == 'x', "буфер с ip_len=0 не изменён");
+}
+
 static void test_facade_and_instance()
 {
     std::printf("[TEST] 9. Фасад и класс — один экземпляр...\n");
@@ -282,6 +495,10 @@ int main()
     test_retry_timer_callback();
     test_timer_create_failure();
     test_get_info();
+    test_incomplete_config_with_ssid();
+    test_open_network();
+    test_stack_failures();
+    test_facade_retry_reset_and_zero_len();
     test_facade_and_instance();
 
     std::printf("========================================\n");

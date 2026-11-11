@@ -39,6 +39,17 @@ void wifi_mock_set_auto_got_ip(bool enabled, uint32_t ip_addr, uint32_t gw_addr)
 void wifi_mock_fail_next_init(esp_err_t err);
 void wifi_mock_fail_next_timer_create(esp_err_t err);
 void wifi_mock_fail_next_inactive_time(esp_err_t err);
+/* Остальные шаги подъёма стека: каждый проверяется отдельным кейсом, иначе
+ * соответствующий ESP_RETURN_ON_ERROR в app_wifi.cpp не наблюдаем. */
+void wifi_mock_fail_next_netif_init(esp_err_t err);
+void wifi_mock_fail_next_event_loop(esp_err_t err);
+void wifi_mock_fail_next_set_mode(esp_err_t err);
+void wifi_mock_fail_next_set_config(esp_err_t err);
+void wifi_mock_fail_next_start(esp_err_t err);
+void wifi_mock_fail_next_handler_register(esp_err_t err);
+/* Отказ регистрации конкретного события: WIFI_EVENT и IP_EVENT — две разные
+ * строки в bring_up_stack(), и однократный сброс проверяет только первую. */
+void wifi_mock_fail_handler_register_for(esp_event_base_t base, esp_err_t err);
 
 /** Журнал вызовов. */
 int wifi_mock_init_calls(void);

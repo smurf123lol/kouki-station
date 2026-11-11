@@ -271,11 +271,15 @@ WIFI="$SUPPORT/wifi"
 run "wifi mock" "$CC" -std=gnu11 -Wall -Wextra -I"$WIFI" -I"$SUPPORT" \
     -c "$WIFI/wifi_mock.c" -o "$OBJ_DIR/wifi_mock.o"
 # app_config.cpp тоже участвует: SSID/пароль Wi-Fi берёт из kouki::config().
+# -DKOUKI_TEST_LOG_CAPTURE: backoff и сброс счётчика повторов наблюдаемы только
+# по тексту лога («соединение потеряно (попытка N)»), поэтому стенд перехватывает
+# ESP_LOGW. Там же проверяется предупреждение про inactive_time.
 run "wifi build" "$CXX" -std=c++17 -Wall -Wextra \
     -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    -DKOUKI_TEST_LOG_CAPTURE \
     "$TEST/test_wifi.cpp" \
     "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" "$MAIN/app_time.cpp" \
-    "$OBJ_DIR/wifi_mock.o" \
+    "$OBJ_DIR/wifi_mock.o" "$OBJ_DIR/log_capture.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     -lm \
     -o "$OBJ_DIR/test_wifi_bin"
