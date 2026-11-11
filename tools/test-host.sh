@@ -407,13 +407,18 @@ run "setup mock" "$CC" -std=gnu11 -Wall -Wextra "${SETUP_CFG[@]}" -I"$SETUP" -I"
     -c "$SETUP/setup_mock.c" -o "$OBJ_DIR/setup_mock.o"
 run "setup stubs" "$CC" -std=gnu11 -Wall -Wextra "${SETUP_CFG[@]}" -I"$SETUP" -I"$WIFI" -I"$SUPPORT" -I"$MAIN" \
     -c "$SETUP/setup_stubs.c" -o "$OBJ_DIR/setup_stubs.o"
+# -DKOUKI_TEST_LOG_CAPTURE: часть пункта 31 ревью П11 — тексты логов портала
+# (SoftAP запущен, веб-сервер поднят, отказ httpd) были мутантами, которые
+# стенд не видел: заглушки esp_log.h по умолчанию логи выбрасывают.
 run "setup build" "$CXX" -std=c++17 -Wall -Wextra \
-    "${SETUP_CFG[@]}" -I"$SETUP" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
+    "${SETUP_CFG[@]}" -DKOUKI_TEST_LOG_CAPTURE -DKOUKI_MAIN_DIR="\"$MAIN\"" \
+    -I"$SETUP" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" -I"$MAIN" \
     "$TEST/test_setup.cpp" \
     "$MAIN/app_setup.cpp" "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" "$MAIN/app_time.cpp" \
     "$OBJ_DIR/setup_mock.o" "$OBJ_DIR/setup_stubs.o" \
     "$OBJ_DIR/wifi_mock.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
+    "$OBJ_DIR/log_capture.o" \
     -lm \
     -o "$OBJ_DIR/test_setup_bin"
 run "setup run" "$OBJ_DIR/test_setup_bin"

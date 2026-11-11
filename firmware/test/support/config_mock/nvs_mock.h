@@ -33,6 +33,17 @@ void nvs_mock_fail_next_open(esp_err_t err);
 /** Следующий nvs_get_str() по ключу вернёт заданный код. */
 void nvs_mock_fail_next_get_str(const char *key, esp_err_t err);
 
+/**
+ * Следующий nvs_set_str() с этим ключом ("" — с любым) вернёт заданный код.
+ *
+ * Нужен для ветки «Config::save() не смог записать настройку»: портал обязан
+ * ответить 500 «Ошибка записи в NVS» и не перезагружать плату.
+ */
+void nvs_mock_fail_next_set_str(const char *key, esp_err_t err);
+
+/** Следующий nvs_commit() вернёт заданный код (однократно). */
+void nvs_mock_fail_next_commit(esp_err_t err);
+
 /** Есть ли namespace в «флеше». */
 bool nvs_mock_has_namespace(const char *ns);
 

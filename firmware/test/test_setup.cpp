@@ -17,6 +17,7 @@
 #include "app_setup.hpp"
 #include "app_voice.h"
 #include "app_wifi.hpp"
+#include "log_capture.h"
 #include "nvs_mock.h"
 #include "wifi_mock.h"
 #include "setup_mock.h"
@@ -94,6 +95,59 @@ esp_err_t call_route(size_t index, const char *body)
     // иначе trampoline не найдёт экземпляр.
     req.user_ctx = uri.user_ctx;
     return uri.handler(&req);
+}
+
+/** Исходник модуля из firmware/main (KOUKI_MAIN_DIR ставит test-host.sh). */
+std::string read_source(const char *name)
+{
+    const std::string path = std::string(KOUKI_MAIN_DIR) + "/" + name;
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+        std::fprintf(stderr, "FAIL: не открылся %s\n", path.c_str());
+        std::exit(1);
+    }
+    std::string out;
+    char buf[4096];
+    size_t n = 0;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+        out.append(buf, n);
+    }
+    std::fclose(f);
+    return out;
+}
+
+/**
+ * Тело функции по сигнатуре: от первого '{' после неё до парной '}'.
+ *
+ * Нужно для текстов printf (help, diag, баннер консоли): на хосте они идут
+ * в stdout стенда, а не в перехват логов, поэтому сверяются по исходнику —
+ * так же, как это делает стенд Station для ESP_LOG.
+ */
+std::string body_of(const std::string &src, const std::string &signature)
+{
+    const size_t at = src.find(signature);
+    if (at == std::string::npos) {
+        std::fprintf(stderr, "FAIL: в исходнике нет сигнатуры «%s»\n", signature.c_str());
+        std::exit(1);
+    }
+    size_t open = src.find('{', at + signature.size());
+    if (open == std::string::npos) {
+        std::fprintf(stderr, "FAIL: нет тела у «%s»\n", signature.c_str());
+        std::exit(1);
+    }
+    int depth = 0;
+    for (size_t i = open; i < src.size(); i++) {
+        if (src[i] == '{') {
+            depth++;
+        } else if (src[i] == '}') {
+            depth--;
+            if (depth == 0) {
+                return src.substr(open, i - open + 1);
+            }
+        }
+    }
+    std::fprintf(stderr, "FAIL: тело «%s» не закрылось\n", signature.c_str());
+    std::exit(1);
 }
 
 /** Форма /save из готовых значений (все поля, которые читает модуль). */
@@ -491,6 +545,130 @@ static void test_console_init()
     CHECK(kouki_setup_console_init() == ESP_FAIL, "отказ xTaskCreate -> ESP_FAIL");
 }
 
+// Пункт 31 ревью П11: ветки, которые стенд не видел.
+static void test_review_gaps()
+{
+    std::printf("[TEST] 15. Ветки ревью П11: PEM-разбор, отказ save(), dev_source, help...\n");
+
+    // (a) PEM с маркерами, но мусорным телом: маркерный guard пропускает,
+    //     ловит разбор mbedtls. Без этой проверки снятие второго guard-а
+    //     выживало (первый отвергал «not-a-pem» и тест был доволен).
+    reset_all();
+    CHECK(kouki_setup_start() == ESP_OK, "портал поднят");
+    std::string body = form("home", "https://kouki.local", "new-token-123", "secret-pass",
+                            "-----BEGIN CERTIFICATE-----@@@@-----END CERTIFICATE-----");
+    CHECK(call_route(2, body.c_str()) == ESP_OK, "PEM с битым телом: обработчик отвечает");
+    CHECK(setup_httpd_last_status() == 400, "PEM с битым телом -> 400");
+    CHECK(std::strstr(setup_httpd_last_body(), "не разбирается") != nullptr,
+          "текст отказа — «Сертификат CA не разбирается.»");
+    CHECK(setup_task_creates() == 0, "битый PEM не планирует перезагрузку");
+
+    // (b) save() вернул ошибку -> 500 «Ошибка записи в NVS», ESP_FAIL,
+    //     перезагрузки нет. Раньше ветка была не покрыта: мок NVS не умел
+    //     отказывать на записи.
+    reset_all();
+    CHECK(kouki_setup_start() == ESP_OK, "портал поднят");
+    nvs_mock_fail_next_commit(ESP_ERR_NVS_READ_ONLY);
+    body = form("home", "https://kouki.local", "new-token-123");
+    CHECK(call_route(2, body.c_str()) == ESP_FAIL, "отказ save() -> ESP_FAIL");
+    CHECK(setup_httpd_send_err_calls() == 1, "отправлен ответ об ошибке");
+    CHECK(setup_httpd_last_err_status() == 500, "отказ save() -> 500");
+    CHECK(setup_task_creates() == 0, "отказ save() не планирует перезагрузку");
+
+    // (c) пустой dev_source в форме -> метка по умолчанию «station».
+    reset_all();
+    CHECK(kouki_setup_start() == ESP_OK, "портал поднят");
+    body = "wifi_ssid=home&wifi_pass=secret-pass&srv_url=https://kouki.local"
+           "&srv_token=new-token-123&dev_source=&wake_en=1&wake_th=65";
+    CHECK(call_route(2, body.c_str()) == ESP_OK, "пустой dev_source: обработчик отвечает");
+    CHECK(std::strcmp(kouki_config_get_dev_source(), KOUKI_CONFIG_DEFAULT_SOURCE) == 0,
+          "пустой dev_source -> KOUKI_CONFIG_DEFAULT_SOURCE");
+    CHECK(std::strcmp(KOUKI_CONFIG_DEFAULT_SOURCE, "station") == 0, "метка по умолчанию — station");
+
+    // (d) отказ esp_wifi_set_config(AP) пробрасывается и httpd не поднимается.
+    reset_all();
+    wifi_mock_fail_next_set_config(ESP_ERR_INVALID_ARG);
+    CHECK(kouki_setup_start() == ESP_ERR_INVALID_ARG, "отказ set_config(AP) -> тот же код");
+    CHECK(setup_httpd_start_calls() == 0, "при отказе set_config httpd не поднимался");
+
+    // (e) стек веб-сервера: конфигурация httpd_start видна моку.
+    reset_all();
+    CHECK(kouki_setup_start() == ESP_OK, "портал поднят");
+    CHECK(setup_httpd_last_config()->port == 80, "порт по умолчанию — 80");
+    CHECK(setup_httpd_last_config()->stack_size == 6144, "стек веб-сервера — 6144");
+
+    // (f) тексты логов портала (перехват ESP_LOG в стенде).
+    reset_all();
+    kouki_test_log_clear();
+    CHECK(kouki_setup_start() == ESP_OK, "портал поднят");
+    CHECK(kouki_test_log_contains("SoftAP запущен: Kouki-Setup-BC5E (IP 192.168.4.1)"),
+          "лог SoftAP с именем сети и адресом");
+    CHECK(kouki_test_log_contains("веб-сервер настройки поднят на порту 80"),
+          "лог поднятого веб-сервера");
+
+    reset_all();
+    kouki_test_log_clear();
+    setup_httpd_fail_next_start(ESP_FAIL);
+    CHECK(kouki_setup_start() == ESP_FAIL, "отказ httpd_start -> ESP_FAIL");
+    CHECK(kouki_test_log_contains("не удалось запустить веб-сервер: ESP_FAIL"),
+          "лог отказа веб-сервера");
+
+    // (g) help/diag/баннер консоли — printf, а не ESP_LOG: сверяем исходник.
+    const std::string src = read_source("app_setup.cpp");
+    const std::string help = body_of(src, "strcmp(cmd, \"help\") == 0");
+    CHECK(help.find("Команды консоли:") != std::string::npos, "help печатает заголовок");
+    // Сверяются строки целиком (команда + описание: подмена только описания
+    // раньше выживала, потому что проверялось лишь имя команды).
+    for (const char *line : {
+             "  set_wifi <ssid> [pass]  — задать Wi-Fi (SSID и опциональный пароль)\\n",
+             "  set_token <token>       — задать bearer-токен сервера (мин. 8 символов)\\n",
+             "  set_url <url>           — задать URL сервера (http:// или https://)\\n",
+             "  set_source <source>     — задать метку источника (по умолчанию 'station')\\n",
+             "  set_silent <0|1>        — включить/выключить режим тишины (без голоса)\\n",
+             "  set_wake <0|1>          — включить/выключить wake-word «эй гин»\\n",
+             "  set_wake_th <10..95>    — порог срабатывания wake-word (по умолч. 75)\\n",
+             "  show                    — показать текущие настройки (секреты скрыты ***)\\n",
+             "  state                   — показать статус голосового автомата (FSM)\\n",
+             "  save                    — сохранить настройки в NVS\\n",
+             "  reset                   — очистить настройки в NVS\\n",
+             "  record                  — начать голосовую запись (сессия TASK)\\n",
+             "  stop                    — остановить запись и отправить на сервер\\n",
+             "  ask                     — начать голосовую запись (сессия ASK)\\n",
+             "  diag                    — показать свободную память (heap/PSRAM)\\n",
+             "  reboot                  — перезагрузить станцию\\n",
+             "  help                    — эта справка\\n\\n",
+         }) {
+        CHECK(help.find(line) != std::string::npos,
+              "help перечисляет команду вместе с описанием");
+    }
+#if defined(CONFIG_KOUKI_TEST_CONSOLE_CMDS)
+    CHECK(help.find("test_seed_history") != std::string::npos, "help знает test_seed_history");
+    CHECK(help.find("test_mock_done") != std::string::npos, "help знает test_mock_done");
+#endif
+
+    const std::string diag = body_of(src, "strcmp(cmd, \"diag\") == 0");
+    CHECK(diag.find("Свободная память кучи: %u байт, PSRAM: %u байт") != std::string::npos,
+          "diag печатает heap и PSRAM с байтами");
+
+    const std::string loop = body_of(src, "void Setup::console_loop()");
+    CHECK(loop.find("=== Kouki Station Console ===") != std::string::npos,
+          "баннер консоли на месте");
+    CHECK(loop.find("Введите 'help' для списка команд.") != std::string::npos,
+          "подсказка про help на месте");
+    CHECK(loop.find("нет памяти под буфер консоли") != std::string::npos,
+          "лог отказа malloc под строку консоли");
+
+    // (h) Граница строки консоли: kConsoleLineMax участвует в двух местах
+    // (malloc и fgets) — уменьшение константы на хосте ненаблюдаемо (ввод
+    // идёт из stdin), поэтому проверяется и значение, и обе точки.
+    CHECK(src.find("constexpr size_t kConsoleLineMax = 512;") != std::string::npos,
+          "граница строки консоли — 512 байт");
+    CHECK(loop.find("malloc(kConsoleLineMax)") != std::string::npos,
+          "буфер консоли выделяется по kConsoleLineMax");
+    CHECK(loop.find("fgets(line, kConsoleLineMax, stdin)") != std::string::npos,
+          "fgets читает не больше kConsoleLineMax");
+}
+
 static void test_facade()
 {
     std::printf("[TEST] 14. C-фасад 1:1: те же объекты и состояние...\n");
@@ -519,6 +697,7 @@ int main()
     test_console_save_reset();
     test_console_voice();
     test_console_init();
+    test_review_gaps();
     test_facade();
     std::printf("=== Setup: %d проверок PASS ===\n", g_checks);
     return 0;

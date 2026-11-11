@@ -44,6 +44,9 @@ static char s_last_body[16384];
 static char s_last_type[64];
 static int s_send_err_calls;
 static int s_last_err_status;
+/* Конфигурация, с которой позвали httpd_start: нужна, чтобы увидеть
+ * `config.stack_size = 6144` из app_setup.cpp (пункт 31(g) ревью П11). */
+static httpd_config_t s_last_config;
 
 void setup_httpd_reset(void)
 {
@@ -56,6 +59,7 @@ void setup_httpd_reset(void)
     s_last_type[0] = '\0';
     s_send_err_calls = 0;
     s_last_err_status = 0;
+    memset(&s_last_config, 0, sizeof(s_last_config));
 }
 
 void setup_httpd_fail_next_start(esp_err_t err) { s_fail_start = err; }
@@ -63,7 +67,9 @@ void setup_httpd_fail_next_start(esp_err_t err) { s_fail_start = err; }
 esp_err_t httpd_start(httpd_handle_t *handle, const httpd_config_t *config)
 {
     s_start_calls++;
-    (void)config;
+    if (config != NULL) {
+        s_last_config = *config;
+    }
     if (s_fail_start != ESP_OK) {
         const esp_err_t err = s_fail_start;
         s_fail_start = ESP_OK;
@@ -73,6 +79,11 @@ esp_err_t httpd_start(httpd_handle_t *handle, const httpd_config_t *config)
         *handle = &s_server_obj;
     }
     return ESP_OK;
+}
+
+const httpd_config_t *setup_httpd_last_config(void)
+{
+    return &s_last_config;
 }
 
 esp_err_t httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri)

@@ -83,6 +83,8 @@ const char *setup_httpd_last_type(void);
 /** Сколько раз вызывали httpd_resp_send_err и с каким кодом. */
 int setup_httpd_send_err_calls(void);
 void setup_httpd_set_route_user_ctx(int index, void *ctx);
+/** Конфигурация последнего httpd_start() (в т.ч. stack_size). */
+const httpd_config_t *setup_httpd_last_config(void);
 int setup_httpd_last_err_status(void);
 
 #ifdef __cplusplus

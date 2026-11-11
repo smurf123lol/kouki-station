@@ -54,6 +54,11 @@ static char s_last_open_ns[16];
 static esp_err_t s_pending_open_error;
 static char s_pending_get_str_key[16];
 static esp_err_t s_pending_get_str_error;
+/* Однократный отказ записи/фиксации: нужен, чтобы проверить ветку
+ * «save() вернул ошибку → портал отвечает 500 Ошибка записи в NVS». */
+static esp_err_t s_pending_set_str_error;
+static char s_pending_set_str_key[16];
+static esp_err_t s_pending_commit_error;
 
 static mock_ns_t *find_ns(const char *name)
 {
@@ -135,11 +140,25 @@ void nvs_mock_reset(void)
     s_pending_open_error = ESP_OK;
     s_pending_get_str_key[0] = '\0';
     s_pending_get_str_error = ESP_OK;
+    s_pending_set_str_error = ESP_OK;
+    s_pending_set_str_key[0] = '\0';
+    s_pending_commit_error = ESP_OK;
 }
 
 void nvs_mock_fail_next_open(esp_err_t err)
 {
     s_pending_open_error = err;
+}
+
+void nvs_mock_fail_next_set_str(const char *key, esp_err_t err)
+{
+    strncpy(s_pending_set_str_key, key, sizeof(s_pending_set_str_key) - 1);
+    s_pending_set_str_error = err;
+}
+
+void nvs_mock_fail_next_commit(esp_err_t err)
+{
+    s_pending_commit_error = err;
 }
 
 void nvs_mock_fail_next_get_str(const char *key, esp_err_t err)
@@ -431,6 +450,13 @@ esp_err_t nvs_set_str(nvs_handle_t handle, const char *key, const char *value)
     if (ns == NULL) {
         return ESP_ERR_NVS_INVALID_HANDLE;
     }
+    if (s_pending_set_str_error != ESP_OK &&
+        (s_pending_set_str_key[0] == '\0' || strcmp(s_pending_set_str_key, key) == 0)) {
+        const esp_err_t err = s_pending_set_str_error;
+        s_pending_set_str_error = ESP_OK;
+        s_pending_set_str_key[0] = '\0';
+        return err;
+    }
     if (value == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -478,6 +504,11 @@ esp_err_t nvs_erase_all(nvs_handle_t handle)
 esp_err_t nvs_commit(nvs_handle_t handle)
 {
     (void)handle;
+    if (s_pending_commit_error != ESP_OK) {
+        const esp_err_t err = s_pending_commit_error;
+        s_pending_commit_error = ESP_OK;
+        return err;
+    }
     return ESP_OK;
 }
 
