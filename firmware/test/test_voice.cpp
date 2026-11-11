@@ -153,6 +153,39 @@ bool is_mic_reader_exempt(const std::filesystem::path &path, const std::filesyst
     return false;
 }
 
+
+/**
+ * Тело функции по сигнатуре: от первого '{' до парной '}'.
+ *
+ * Нужно для проверок, которые на хосте ненаблюдаемы: путь start_recording()
+ * под ESP_PLATFORM (тон ERROR, запрос Wi-Fi) сюда не компилируется, а
+ * print_state() печатает в консоль. Читаем ФАКТИЧЕСКИЙ код, комментарии
+ * вырезаны, поэтому подмена строки или перестановка guard-а видна.
+ */
+std::string body_of(const std::string &src, const std::string &signature)
+{
+    const size_t at = src.find(signature);
+    if (at == std::string::npos) {
+        return std::string();
+    }
+    const size_t open = src.find('{', at);
+    if (open == std::string::npos) {
+        return std::string();
+    }
+    int depth = 0;
+    for (size_t i = open; i < src.size(); ++i) {
+        if (src[i] == '{') {
+            ++depth;
+        } else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) {
+                return src.substr(open, i - open + 1);
+            }
+        }
+    }
+    return std::string();
+}
+
 /**
  * ИНВАРИАНТ I2S (AGENTS.md п.1): микрофон читает только голосовое ядро.
  *
@@ -243,6 +276,88 @@ void test_i2s_owner_invariant()
     CHECK(count_occurrences(voice_src, "xTaskCreatePinnedToCore") == 1,
           "задача записи создаётся в одном месте");
     CHECK(voice_src.find("\"kouki.record\"") != std::string::npos, "имя задачи записи прежнее");
+}
+
+
+/*
+ * Пункт 35 ревью П12: три выживших мутанта вокруг start_recording/print_state.
+ *
+ * (a) m07 — снятый guard «из SENDING запись не начинается». На хосте он
+ *     НЕнаблюдаем: тон ERROR и проверка Wi-Fi живут под ESP_PLATFORM, а
+ *     manager.start_recording_from_button() и сам возвращает false в Sending.
+ *     Поэтому проверяется ФАКТИЧЕСКИЙ код: guard стоит в теле и ДО ветки
+ *     ESP_PLATFORM — иначе на плате запись из отправки играла бы тон ошибки.
+ * (b) m14-m17 — подмена текстов print_state: тест раньше только «вызов
+ *     безопасен». Сверяются все семь format-строк, включая выравнивание
+ *     «Текущее:       %s» с семью пробелами.
+ * (c) m26-m28 — подмена текстов логов модуля (6 format-строк).
+ */
+void test_start_recording_and_state_texts()
+{
+    std::printf("[TEST] 8. Guard старта из SENDING, тексты print_state и логов...\n");
+    const std::filesystem::path main_dir(KOUKI_MAIN_DIR);
+    const std::string voice_src = strip_comments(read_file(main_dir / "app_voice.cpp"));
+    CHECK(!voice_src.empty(), "app_voice.cpp читается");
+
+    /* (a) Guard SENDING в start_recording(): позиция и порядок относительно
+     * платформенной ветки Wi-Fi. */
+    const std::string start_body = body_of(voice_src, "esp_err_t Voice::start_recording()");
+    CHECK(!start_body.empty(), "тело Voice::start_recording() найдено");
+    const size_t guard = start_body.find("StateId::Sending");
+    CHECK(guard != std::string::npos,
+          "start_recording() отвергает старт во время отправки (guard SENDING)");
+    CHECK(start_body.find("ESP_ERR_INVALID_STATE") != std::string::npos,
+          "guard SENDING возвращает ESP_ERR_INVALID_STATE");
+    const size_t platform = start_body.find("#ifdef ESP_PLATFORM");
+    CHECK(platform != std::string::npos, "в start_recording() есть платформенная ветка Wi-Fi");
+    CHECK(guard < platform,
+          "guard SENDING стоит ДО ветки ESP_PLATFORM: из отправки тон ошибки не играет");
+    /* Поведенческая половина: в состоянии отправки фасад обязан вернуть
+     * ESP_ERR_INVALID_STATE и не менять состояние. Дойти до SENDING на хосте
+     * можно только через manager (задачи записи нет) — это делает test_fsm.cpp,
+     * здесь проверяется, что публичный API не «проглатывает» отказ. */
+    CHECK(kouki_voice_start_recording() == ESP_OK ||
+              kouki_voice_start_recording() == ESP_ERR_INVALID_STATE,
+          "фасад старта отвечает одним из двух кодов, без падения");
+
+    /* (b) Тексты print_state: подмена любой строки — регрессия консоли. */
+    const std::string print_body = body_of(voice_src, "void Voice::print_state() const");
+    CHECK(!print_body.empty(), "тело Voice::print_state() найдено");
+    const char *print_texts[] = {
+        "\"\\n--- FSM Состояние ---\\n\"",
+        "\"Текущее:       %s\\n\"",       // ровно семь пробелов после двоеточия
+        "\"В состоянии:   %u мс\\n\"",
+        "\"Предыдущее:    %s\\n\"",
+        "\"Причина входа: %s\\n\"",
+        "\"Всего переходов: %u\\n\"",
+        "\"Прерываний:    %u\\n\"",
+        "\"Буфер аудио:   %u / %u байт (%.1f сек)\\n\"",
+        "\"VAD метрики:   речь=%s, тишина=%u/%u мс, длит=%u мс\\n\"",
+        "\"---------------------\\n\\n\"",
+    };
+    for (const char *t : print_texts) {
+        char msg[512];
+        std::snprintf(msg, sizeof(msg), "print_state печатает %s", t);
+        CHECK(print_body.find(t) != std::string::npos, msg);
+    }
+
+    /* (c) Логи модуля: 6 format-строк, включая диагностику под ESP_PLATFORM. */
+    const char *log_texts[] = {
+        "не хватило PSRAM под %u байт записи",
+        "wake-word деактивирован или недоступен, работаем по кнопке",
+        "C++ FSM голосовое ядро запущено: макс %d с, сервер %s",
+        "запись не началась: нет подключения к Wi-Fi",
+        "диагностика: чтение не удалось (raw=%d)",
+        "уровни каналов (raw=%d, каналов %d): %\" PRIu64 \" %\" PRIu64 \" %\" PRIu64 \" %\" PRIu64",
+    };
+    for (const char *t : log_texts) {
+        char msg[512];
+        std::snprintf(msg, sizeof(msg), "лог ядра сохранён: %s", t);
+        CHECK(voice_src.find(t) != std::string::npos, msg);
+    }
+    /* Ни одного ESP_LOG без сверки: список обязан пополняться вместе с кодом. */
+    CHECK(count_occurrences(voice_src, "ESP_LOG") == 6,
+          "в app_voice.cpp ровно 6 ESP_LOG — все сверены по тексту");
 }
 
 void test_facade_before_init()
@@ -373,6 +488,7 @@ int main()
     test_init_and_events();
     test_sessions();
     test_button_recording();
+    test_start_recording_and_state_texts();
     test_snapshot_and_print();
     test_debug_levels_noop_on_host();
     std::printf("=== Voice: %d проверок PASS ===\n", g_checks);
