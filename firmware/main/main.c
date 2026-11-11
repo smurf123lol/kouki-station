@@ -1,122 +1,33 @@
 /*
  * Kouki Station — голосовая станция Kouki.
  *
- * Порядок инициализации повторяет заводской пример Waveshare:
- * аудио-борда (создаёт I2C и кодек) → EXIO (расширитель GPIO) → LCD (QSPI,
- * ST77916) → LVGL. Аудио раньше экрана, потому что расширитель GPIO и тач
- * живут на I2C, который поднимает именно аудио-борда.
+ * Точка входа остаётся C-файлом (спека T121 §5, решение 10.11): здесь только
+ * то, что обязано произойти ДО объектного графа — инициализация NVS и ранняя
+ * проверка удержания кнопки BOOT для сброса настроек. Сборка объектов
+ * (kouki::station()) и прежний порядок инициализации живут в kouki_api.cpp,
+ * порядок не изменился:
+ *
+ *   NVS -> BOOT-сброс -> kouki_config_init -> esp_board_init(16000,2,16)
+ *   -> audio_out -> player -> EXIO -> LCD -> LVGL -> voice -> history -> power
+ *   -> ui -> консоль -> ota -> Wi-Fi/SoftAP
  */
-#include "app_audio_out.h"
 #include "app_config.h"
 #include "app_history.h"
-#include "app_ota.h"
 #include "app_power.h"
+#include "app_ota.h"
 #include "app_setup.h"
-#include "app_time.h"
 #include "app_ui.h"
 #include "app_voice.h"
-#include "app_wifi.h"
 #include "driver/gpio.h"
-#include "esp_board_init.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+#include "kouki_api.h"
 #include "lvgl.h"
 #include "nvs_flash.h"
 
-#include "LVGL_Driver.h"
-#include "ST77916.h"
-#include "TCA9554PWR.h"
-
 static const char *TAG = "kouki";
-
-/* Сеть поднимается отдельно: экран должен ожить даже без Wi-Fi. */
-static void wifi_task(void *arg)
-{
-    (void)arg;
-
-    if (kouki_wifi_connect() == ESP_OK) {
-        ESP_LOGI(TAG, "сеть готова, сервер %s", kouki_config_get_srv_url());
-        kouki_ota_start();
-#if CONFIG_KOUKI_DEBUG_MIC
-    /* Диагностика входа: раз в 6 секунд печатаем уровни, чтобы можно было
-     * поговорить в этот момент и увидеть, какой канал живой. */
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(6000));
-        kouki_voice_debug_levels();
-    }
-#endif
-
-#if CONFIG_KOUKI_TEST_MODE
-        /* Тестовый режим: проверка тракта без человека. Станция выжидает,
-         * пишет несколько секунд и отправляет фразу так же, как это сделала
-         * бы кнопка — тем же путём, с той же сессией. */
-        kouki_session_t session =
-#if CONFIG_KOUKI_TEST_MODE_AS_QUESTION
-            KOUKI_SESSION_ASK;
-#else
-            KOUKI_SESSION_TASK;
-#endif
-        kouki_voice_set_session(session);
-        ESP_LOGW(TAG, "тестовый режим: пауза %d с, запись %d с, отправлю как %s",
-                 CONFIG_KOUKI_TEST_MODE_DELAY_S, CONFIG_KOUKI_TEST_MODE_SECONDS,
-                 session == KOUKI_SESSION_ASK ? "вопрос" : "задачу");
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_TEST_MODE_DELAY_S * 1000));
-        if (kouki_voice_start_recording() == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(CONFIG_KOUKI_TEST_MODE_SECONDS * 1000));
-            kouki_voice_stop_and_send();
-        } else {
-            ESP_LOGE(TAG, "тестовый режим: запись не началась");
-        }
-#endif
-    } else {
-        ESP_LOGE(TAG, "без сети: кнопка будет отвечать ошибкой отправки");
-    }
-
-    vTaskDelete(NULL);
-}
-
-
-/*
- * Усилитель динамика и громкость кодека.
- *
- * Две вещи, без которых кодек отвечает ESP_OK, а звука нет:
- *  - NS4150B включается высоким уровнем на GPIO 15 (в вендорном audio_board
- *    GPIO_PWR_CTRL = -1, то есть нога не поднята);
- *  - громкость в bsp_board.c ставится до esp_codec_dev_open, а ES8311 такой
- *    вызов игнорирует — ставим её ещё раз, уже после открытия.
- */
-static void kouki_player_init(void)
-{
-#if CONFIG_KOUKI_PLAYER_PA_GPIO >= 0
-    const gpio_num_t pa = (gpio_num_t)CONFIG_KOUKI_PLAYER_PA_GPIO;
-    const gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << CONFIG_KOUKI_PLAYER_PA_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    const esp_err_t pa_err = gpio_config(&cfg);
-    if (pa_err == ESP_OK) {
-        gpio_set_level(pa, 1);
-        ESP_LOGI(TAG, "усилитель динамика включён (GPIO %d)", CONFIG_KOUKI_PLAYER_PA_GPIO);
-    } else {
-        ESP_LOGW(TAG, "не удалось поднять усилитель (GPIO %d): %s",
-                 CONFIG_KOUKI_PLAYER_PA_GPIO, esp_err_to_name(pa_err));
-    }
-#endif
-
-    kouki_audio_out_lock();
-    const esp_err_t vol_err = esp_audio_set_play_vol(CONFIG_KOUKI_PLAYER_VOLUME);
-    kouki_audio_out_unlock();
-    if (vol_err == ESP_OK) {
-        ESP_LOGI(TAG, "громкость выхода: %d %%", CONFIG_KOUKI_PLAYER_VOLUME);
-    } else {
-        ESP_LOGW(TAG, "кодек не принял громкость %d: %s", CONFIG_KOUKI_PLAYER_VOLUME,
-                 esp_err_to_name(vol_err));
-    }
-}
 
 void app_main(void)
 {
@@ -151,38 +62,9 @@ void app_main(void)
 
     ESP_ERROR_CHECK(kouki_config_init());
 
-    /*
-     * Порядок строго как в заводском примере: сначала аудио-борда — она создаёт
-     * I2C-шину (i2c_new_master_bus), без которой TCA9554PWR не может открыть
-     * устройство; потом расширитель GPIO (через него сбрасываются LCD и тач),
-     * затем LCD и LVGL.
-     */
-    ESP_ERROR_CHECK(esp_board_init(16000, 2, 16));
-    ESP_ERROR_CHECK(kouki_audio_out_init());
-    kouki_player_init();
-    EXIO_Init();
-    LCD_Init();
-    LVGL_Init();
-
-    ESP_ERROR_CHECK(kouki_voice_init(NULL, NULL));
-    kouki_history_init();
-    kouki_power_init();
-    kouki_ui_init();
-
-    kouki_setup_console_init();
-    ESP_ERROR_CHECK(kouki_ota_init());
-
-    if (!kouki_config_is_complete()) {
-        ESP_LOGW(TAG, "конфигурация не настроена: переход в режим SoftAP настройки");
-        kouki_setup_start();
-    } else {
-        ESP_LOGI(TAG, "конфигурация готова, подключение к сети");
-        if (xTaskCreate(wifi_task, "kouki.wifi", 6144, NULL, 4, NULL) != pdPASS) {
-            ESP_LOGE(TAG, "не удалось создать задачу Wi-Fi");
-        }
-    }
-
-    ESP_LOGI(TAG, "станция готова: %d с записи на одну фразу", CONFIG_KOUKI_MAX_RECORD_S);
+    /* Объекты станции и порядок инициализации — в kouki_api.cpp. */
+    ESP_ERROR_CHECK(kouki_station_wire());
+    ESP_ERROR_CHECK(kouki_station_init());
 
     uint64_t last_tick_us = esp_timer_get_time();
     while (true) {

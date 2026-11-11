@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Версия прошивки (T16 OTA). В коде доступна через esp_app_get_description()->version
-set(PROJECT_VER "0.1.6")
+set(PROJECT_VER "0.1.7")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(kouki_station)

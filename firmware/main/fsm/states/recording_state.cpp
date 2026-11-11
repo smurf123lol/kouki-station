@@ -172,9 +172,14 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
     }
 
 #ifdef ESP_PLATFORM
+#ifdef CONFIG_KOUKI_WAKE_VERIFY
     /* Запускаем проверку, когда после pre-roll накопилось ~700 мс записи:
-       этого хватает, чтобы в кусок попали «эй гин» и начало команды. */
-    if (CONFIG_KOUKI_WAKE_VERIFY && ctx.is_wake_recording && !m_verify_started && !m_verify_done && ctx.buffer &&
+       этого хватает, чтобы в кусок попали «эй гин» и начало команды.
+       Обвязка #ifdef обязательна: при выключенной опции символа
+       CONFIG_KOUKI_WAKE_VERIFY в сборке нет, и обращение к нему из `if`
+       ломало бы компиляцию (AGENTS.md п.5 — выключенная фича не ломает
+       сборку). Поведение при включённой опции не меняется. */
+    if (ctx.is_wake_recording && !m_verify_started && !m_verify_done && ctx.buffer &&
         kouki_wake_verify_state() != KOUKI_WAKE_VERIFY_PENDING) {
         const size_t after_preroll = (ctx.sample_bytes > m_preroll_bytes) ? (ctx.sample_bytes - m_preroll_bytes) : 0;
         const size_t need = static_cast<size_t>(WAKE_VERIFY_AFTER_MS) * SAMPLE_RATE / 1000 * BYTES_PER_SAMPLE;
@@ -258,7 +263,8 @@ StateId RecordingState::on_step(VoiceContext& ctx, const int16_t *pcm, size_t sa
             }
         }
     }
-#endif
+#endif  // CONFIG_KOUKI_WAKE_VERIFY
+#endif  // ESP_PLATFORM
 
     bool send_now = false;
 
