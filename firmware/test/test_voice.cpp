@@ -17,6 +17,10 @@
 #include <filesystem>
 #include <fstream>
 
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#include <malloc.h>
+#endif
+
 #include "app_voice.h"
 #include "app_voice.hpp"
 
@@ -186,6 +190,28 @@ std::string body_of(const std::string &src, const std::string &signature)
     return std::string();
 }
 
+
+/**
+ * Сколько байт занято в куче сейчас (проверка «повторный init не освобождает
+ * старый буфер», пункт 36 ревью П12).
+ *
+ * uordblks возвращается к прежнему значению после free, поэтому дельта
+ * «до/после» показывает именно оставшийся блок. На платформах без mallinfo2
+ * дельта всегда 0 — тест тогда слабее, но не ломается.
+ */
+static long heap_in_use()
+{
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+    struct mallinfo2 mi = mallinfo2();
+    /* uordblks — блоки в обычных аренах, hblkhd — отданные mmap. Буфер записи
+     * (480 КБ) больше порога mmap (128 КБ), поэтому glibc отдаёт его мимо
+     * арены: без hblkhd дельта была бы нулевой и тест ничего не видел. */
+    return (long)mi.uordblks + (long)mi.hblkhd;
+#else
+    return 0;
+#endif
+}
+
 /**
  * ИНВАРИАНТ I2S (AGENTS.md п.1): микрофон читает только голосовое ядро.
  *
@@ -292,6 +318,43 @@ void test_i2s_owner_invariant()
  *     «Текущее:       %s» с семью пробелами.
  * (c) m26-m28 — подмена текстов логов модуля (6 format-строк).
  */
+
+/*
+ * Пункт 36 ревью П12: повторный init() НЕ освобождает старый буфер записи.
+ *
+ * Это ПРЕДСУЩЕСТВУЮЩЕЕ поведение master (db4bd1b), а не регресс миграции:
+ * app_voice.cpp:73 делает std::malloc(WAV_HEADER_SIZE + m_capacity_bytes)
+ * (15 с * 16000 * 2 + 44 = 480044 байта) и перезаписывает m_buf, не вызывая
+ * free для прежнего. Прогон одного и того же leak_check против старого и
+ * нового модуля даёт ровно 960088 байт в 2 аллокациях — паритет 1:1.
+ *
+ * Спека T121 §3 запрещает чинить такие дефекты в рамках миграции, поэтому
+ * тест ФИКСИРУЕТ текущее поведение. Когда утечку исправят отдельной задачей
+ * (free старого буфера перед новым malloc), этот тест надо переписать на
+ * «второй init() освобождает прежний буфер» и убрать правило
+ * `leak:kouki::Voice::init` из firmware/test/lsan.supp.
+ */
+void test_repeated_init_keeps_old_buffer()
+{
+    std::printf("[TEST] 2. Повторный init() не освобождает старый буфер (master 1:1)...\n");
+    /* Идёт РАНЬШЕ остальных init-тестов: дельта кучи видна только от чистого
+     * состояния, иначе первый вызов ниже уже не даст роста на 480 КБ. */
+
+    const long before = heap_in_use();
+    CHECK(kouki_voice_init(nullptr, nullptr) == ESP_OK, "первый init() -> ESP_OK");
+    const long after_first = heap_in_use();
+    CHECK(after_first - before >= 480000,
+          "первый init() выделил буфер записи (~480044 байта) в куче");
+
+    CHECK(kouki_voice_init(nullptr, nullptr) == ESP_OK, "второй init() -> ESP_OK");
+    const long after_second = heap_in_use();
+    /* Именно «не освободил»: второй блок тоже остался занятым. Значение
+     * занижено до 480000, потому что заглушки VAD/Wake могут добавить мелочь
+     * сверху; важен сам факт роста на размер буфера. */
+    CHECK(after_second - after_first >= 480000,
+          "второй init() оставил и прежний буфер (утечка master 1:1, не регресс)");
+}
+
 void test_start_recording_and_state_texts()
 {
     std::printf("[TEST] 8. Guard старта из SENDING, тексты print_state и логов...\n");
@@ -485,6 +548,7 @@ int main()
     std::printf("=== Voice: host-стенд (T121 П12) ===\n");
     test_i2s_owner_invariant();
     test_facade_before_init();
+    test_repeated_init_keeps_old_buffer();
     test_init_and_events();
     test_sessions();
     test_button_recording();
