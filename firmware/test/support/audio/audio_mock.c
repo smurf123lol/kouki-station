@@ -103,11 +103,15 @@ esp_err_t esp_audio_play(const int16_t *data, int length, TickType_t ticks_to_wa
                 }
             }
             if (total <= edge * 2) {
-                /* Блок короткий: весь попадает в head, tail остаётся пустым. */
-                for (int i = 0; i < total; i++) {
+                /* Блок короткий: весь попадает в head, tail остаётся пустым.
+                 * Именно `total <= 2*edge`: head и tail — по edge сэмплов, и
+                 * при total == 2*edge цикл по total писал бы за границу head
+                 * (UBSan ловил это как index 200 out of bounds). */
+                const int n = total < edge ? total : edge;
+                for (int i = 0; i < n; i++) {
                     call->head[i] = data[i];
                 }
-                call->head_frames = total / 2;
+                call->head_frames = n / 2;
                 call->edge_samples = total;
             } else {
                 for (int i = 0; i < edge; i++) {
