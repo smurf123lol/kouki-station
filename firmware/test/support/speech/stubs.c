@@ -257,9 +257,17 @@ esp_err_t kouki_audio_play_silence(uint32_t silence_ms, TickType_t ticks_to_wait
     (void)ticks_to_wait;
     if (silence_ms == 0) return ESP_OK;
     kouki_audio_out_lock();
-    static const int16_t zeros[320] = { 0 };
-    int total_bytes = (int)(silence_ms * 64);
-    esp_audio_play(zeros, total_bytes, ticks_to_wait);
+    /* Тишина произвольной длины. Прошивка просит silence_ms * 64 байт
+     * (стерео-буфер), а статический zeros[320] был всего 640 байт: на 250 мс
+     * мок читал 16000 байт из 640-байтного массива. Обычный прогон этого не
+     * видел, ASAN видел global-buffer-overflow (находка П14). Буфер выделяется
+     * по фактическому размеру запроса. */
+    const size_t total_bytes = (size_t)silence_ms * 64u;
+    int16_t *zeros = (int16_t *)calloc(1, total_bytes);
+    if (zeros != NULL) {
+        esp_audio_play(zeros, (int)total_bytes, ticks_to_wait);
+        free(zeros);
+    }
     kouki_audio_out_unlock();
     return ESP_OK;
 }

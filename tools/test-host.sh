@@ -18,18 +18,25 @@ SPEECH="$SUPPORT/speech"
 
 usage() {
     cat <<'EOF'
-Использование: tools/test-host.sh [--help]
+Использование: tools/test-host.sh [--asan] [--help]
 
 Собирает и прогоняет host-стенды прошивки (FSM, платформенное поведение,
 UI-автоматы, озвучка) на хосте — без ESP-IDF, только gcc/g++.
 
   -h, --help   показать эту справку и выйти (код 0)
+  --asan       собрать и прогнать стенды под AddressSanitizer + UBSan.
+               Цена — примерно вдвое дольше; нужно для проверок, которые
+               ловят только санитайзеры: выход за границу m_fifo в Vad,
+               утечки PCM при ESP_ERR_TIMEOUT в AudioOut, повторный init
+               Voice. Без флага стенды гоняются как обычно.
 
 Переменные окружения:
   WORKSPACE    каталог воркспейса; объекты и бинарники пишутся в
                $WORKSPACE/_scratch/test-host-obj (по умолчанию воркспейс
                определяется автоматически: для дерева в _scratch/wt/<...>
                берётся каталог над _scratch, иначе родитель репозитория).
+               В режиме --asan каталог другой: test-host-obj-asan, чтобы
+               обычный прогон не пересобирался.
   CC, CXX      компиляторы C и C++ (по умолчанию gcc и g++).
 
 Коды возврата: 0 — все проверки прошли, 1 — падение проверки или сборки,
@@ -37,11 +44,15 @@ UI-автоматы, озвучка) на хосте — без ESP-IDF, тол�
 EOF
 }
 
+USE_ASAN=0
 for arg in "$@"; do
     case "$arg" in
     -h | --help)
         usage
         exit 0
+        ;;
+    --asan)
+        USE_ASAN=1
         ;;
     *)
         echo "test-host: неизвестный аргумент: $arg" >&2
@@ -60,6 +71,24 @@ for tool in "$CC" "$CXX"; do
     fi
 done
 
+# Флаги санитайзеров должны попасть и в компиляцию, и в линковку (иначе g++
+# не подключит рантайм). Вместо правки 50+ команд сборки подменяем сами
+# компиляторы функциями с теми же именами: bash ищет функцию раньше PATH,
+# поэтому каждый вызов "$CC"/"$CXX" получает флаги сам. detect_leaks включён
+# явно — именно он ловит утечку PCM в AudioOut и повторный init Voice.
+if [ "$USE_ASAN" = 1 ]; then
+    # LSAN: известная утечка повторного Voice::init() (master 1:1, спека §3)
+    # вынесена в отдельный файл подавлений с объяснением — см. tests/lsan.supp.
+    export LSAN_OPTIONS="${LSAN_OPTIONS:-suppressions=$TEST/lsan.supp:print_suppressions=1}"
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_stack_use_after_return=1:detect_leaks=1}"
+    export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
+    _san=(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    # shellcheck disable=SC2317  # вызывается через "$CC"/"$CXX"
+    gcc() { command gcc "${_san[@]}" "$@"; }
+    # shellcheck disable=SC2317
+    g++() { command g++ "${_san[@]}" "$@"; }
+fi
+
 # Каталог для объектов вне репозитория: в самом репозитории ничего не оставляем.
 if [ -z "${WORKSPACE:-}" ]; then
     case "$ROOT" in
@@ -68,6 +97,11 @@ if [ -z "${WORKSPACE:-}" ]; then
     esac
 fi
 OBJ_DIR="$WORKSPACE/_scratch/test-host-obj"
+if [ "$USE_ASAN" = 1 ]; then
+    # Отдельный каталог: иначе прогон без санитайзеров перепутал бы объекты
+    # (ASAN-объекты нельзя линковать без флагов и наоборот).
+    OBJ_DIR="$WORKSPACE/_scratch/test-host-obj-asan"
+fi
 rm -rf "$OBJ_DIR"
 mkdir -p "$OBJ_DIR"
 

@@ -111,6 +111,102 @@ static void test_frame_splitting()
     CHECK(kouki_vad_get_speech_streak() == 2, "streak 2: остаток не потерян");
 }
 
+/**
+ * Пункт 6 ревью П6: чанк из фрейма речи И фрейма тишины — речь в чанке есть.
+ *
+ * Мутант w1 (streak сбрасывается после первого фрейма чанка) на 「весь чанк
+ * речь」 выживает, потому что последний фрейм тоже речь. Смешанный чанк его
+ * ловит только если проверять возврат, а не только streak: после тишины
+ * streak = 0, но чанк всё равно содержал речь.
+ */
+static void test_mixed_chunk()
+{
+    std::printf("[TEST] 8. Смешанный чанк: речь + тишина -> true...\n");
+
+    kouki_vad_init();
+    kouki_vad_reset();
+    kouki_vad_host_set_mock(false, false);
+
+    int16_t speech[kFrame];
+    int16_t silence[kFrame];
+    fill_speech(speech, kFrame);
+    fill_silence(silence, kFrame);
+
+    // Речь, затем тишина: в чанке была речь, возврат обязан быть true, хотя
+    // streak обнулился последним фреймом.
+    int16_t mixed[2 * kFrame];
+    std::memcpy(mixed, speech, kFrame * sizeof(int16_t));
+    std::memcpy(mixed + kFrame, silence, kFrame * sizeof(int16_t));
+    CHECK(kouki_vad_process(mixed, 2 * kFrame), "чанк речь+тишина -> true");
+    CHECK(kouki_vad_get_speech_streak() == 0, "streak обнулён последним фреймом тишины");
+
+    // Обратный порядок: тишина, затем речь — streak = 1 и тоже true.
+    kouki_vad_reset();
+    std::memcpy(mixed, silence, kFrame * sizeof(int16_t));
+    std::memcpy(mixed + kFrame, speech, kFrame * sizeof(int16_t));
+    CHECK(kouki_vad_process(mixed, 2 * kFrame), "чанк тишина+речь -> true");
+    CHECK(kouki_vad_get_speech_streak() == 1, "streak 1 после речи в конце чанка");
+
+    // Две тишины подряд — речи в чанке нет.
+    kouki_vad_reset();
+    int16_t double_silence[2 * kFrame];
+    fill_silence(double_silence, 2 * kFrame);
+    CHECK(!kouki_vad_process(double_silence, 2 * kFrame), "чанк из двух фреймов тишины -> false");
+}
+
+/**
+ * Пункт 7 ревью П6 (ВАЖНЫЙ): частичный FIFO + чанк больше фрейма.
+ *
+ * Мутант w2 не учитывает `needed` при копировании в FIFO и пишет весь чанк в
+ * m_fifo, начиная с m_fifo_len. При частичном FIFO (220 сэмплов) и чанке
+ * больше фрейма это выход за границу массива m_fifo[kFrameSamples] — под ASAN
+ * global-buffer-overflow. Тест обязан упасть на мутанте, поэтому здесь важен
+ * именно зазор 220 + 960: без остатка в FIFO мутант пишет в самое начало и
+ * остаётся в границах.
+ */
+static void test_partial_fifo_with_large_chunk()
+{
+    std::printf("[TEST] 9. Частичный FIFO + чанк больше фрейма (границы)...\n");
+
+    kouki_vad_init();
+    kouki_vad_reset();
+    kouki_vad_host_set_mock(false, false);
+
+    // Засеваем FIFO 220 сэмплами речи: фрейм ещё не собрался.
+    int16_t prime[220];
+    fill_speech(prime, 220);
+    CHECK(!kouki_vad_process(prime, 220), "220 сэмплов -> речи пока нет");
+    CHECK(kouki_vad_get_speech_streak() == 0, "фрейм не собран");
+
+    // Чанк на два фрейма: 220 + 960 = 1180 сэмплов при kFrame=480. Правильная
+    // нарезка даёт 260 (добивка) + 480 + 480 + остаток 220.
+    int16_t big[2 * kFrame];
+    fill_speech(big, 2 * kFrame);
+    CHECK(kouki_vad_process(big, 2 * kFrame), "чанк больше фрейма при частичном FIFO -> речь");
+    CHECK(kouki_vad_get_speech_streak() == 2, "ровно два полных фрейма из 220+960");
+
+    // Остаток 220 не потерян: добивка 260 даёт третий фрейм.
+    int16_t topup[260];
+    fill_speech(topup, 260);
+    CHECK(kouki_vad_process(topup, 260), "добивка остатка -> третий фрейм");
+    CHECK(kouki_vad_get_speech_streak() == 3, "streak 3: остаток учтён");
+
+    // Худший случай для мутанта: FIFO почти полон (479), чанк — ровно фрейм.
+    // Правильная нарезка: 1 сэмпл добивает фрейм, остальные 479 снова лежат в
+    // FIFO. Мутант, копирующий чанк целиком в m_fifo[479..1458], выходит за
+    // границу массива на 499 сэмплов — это и ловит ASAN.
+    kouki_vad_reset();
+    int16_t almost[kFrame - 1];
+    fill_speech(almost, kFrame - 1);
+    CHECK(!kouki_vad_process(almost, kFrame - 1), "479 сэмплов -> фрейма нет");
+    CHECK(kouki_vad_process(big, kFrame), "последний сэмпл + целый фрейм");
+    CHECK(kouki_vad_get_speech_streak() == 1, "один фрейм: 1 добивка + 479 в FIFO");
+    // Один сэмпл доводит остаток до фрейма — FIFO не потерян.
+    int16_t one[1] = {1000};
+    CHECK(kouki_vad_process(one, 1), "один сэмпл добивает остаток");
+    CHECK(kouki_vad_get_speech_streak() == 2, "streak 2: остаток 479 не потерян");
+}
+
 static void test_streak_semantics()
 {
     std::printf("[TEST] 3. Смысл streak: серия подряд, возврат process...\n");
@@ -269,6 +365,8 @@ int main()
 
     test_init_deinit();
     test_frame_splitting();
+    test_mixed_chunk();
+    test_partial_fifo_with_large_chunk();
     test_streak_semantics();
     test_energy_path();
     test_mock_path();
