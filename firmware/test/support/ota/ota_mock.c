@@ -61,6 +61,7 @@ static struct {
     bool image_delivered;
 
     int task_create_calls;
+    BaseType_t fail_task_create;
     int task_stack;
     int task_priority;
     void (*task_fn)(void *);
@@ -210,6 +211,11 @@ BaseType_t xTaskCreate(void (*task)(void *), const char *name, uint32_t stack,
     (void)name;
     s_mock.task_create_calls++;
     s_mock.task_stack = (int)stack;
+    if (s_mock.fail_task_create != pdPASS) {
+        const BaseType_t ret = s_mock.fail_task_create;
+        s_mock.fail_task_create = pdPASS;
+        return ret;
+    }
     s_mock.task_priority = (int)priority;
     s_mock.task_fn = task;
     s_mock.task_arg = arg;
@@ -248,6 +254,9 @@ void ota_mock_reset(void)
     s_mock.fail_begin = ESP_OK;
     s_mock.fail_finish = ESP_OK;
     s_mock.fail_mark_valid = ESP_OK;
+    /* memset обнулил и поле отказа xTaskCreate: 0 — это не pdPASS, поэтому
+     * без этой строки «ошибка создания задачи» включалась бы всегда. */
+    s_mock.fail_task_create = pdPASS;
 }
 
 void ota_mock_set_image_state(int state)
@@ -364,6 +373,11 @@ bool ota_mock_keep_alive(void)
         return false;
     }
     return s_mock.last_ota_cfg.http_config->keep_alive_enable;
+}
+
+void ota_mock_fail_task_create(int ret)
+{
+    s_mock.fail_task_create = (BaseType_t)ret;
 }
 
 int ota_mock_task_create_calls(void)

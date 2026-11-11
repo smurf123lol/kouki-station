@@ -525,6 +525,12 @@ static void test_abort_frees_owned()
     CHECK(kouki_audio_out_is_busy(), "очередь непуста перед abort");
 
     kouki_audio_out_abort();
+    /*
+     * abort() вычерпывает очередь сразу, но worker мог уже взять блок и
+     * отдавать его кодеку: is_busy() ещё какое-то время истинно. Дожидаемся
+     * покоя, иначе тест ловит не утечку, а гонку с worker-ом.
+     */
+    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "очередь разошлась после abort");
     const long after = heap_in_use();
 
     CHECK(!kouki_audio_out_is_busy(), "после abort очередь пуста");
@@ -536,7 +542,6 @@ static void test_abort_frees_owned()
      */
     CHECK(after - before <= 2 * 3200,
           "abort освободил владеющие элементы очереди (куча не выросла на всю очередь)");
-    CHECK(kouki_audio_out_wait_idle(portMAX_DELAY) == ESP_OK, "очередь разошлась после abort");
 }
 
 // ------------------------------------------------------------------- Tone --

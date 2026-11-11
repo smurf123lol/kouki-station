@@ -17,8 +17,10 @@
 #include <cstring>
 
 #include "app_config.h"
+#include "app_config.hpp"
 #include "app_ota.h"
 #include "app_ota.hpp"
+#include "log_capture.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "nvs_mock.h"
@@ -114,7 +116,12 @@ static void test_pending_verify_confirm()
     http_mock_set_response(200, "{\"update\":false}");
     kouki::ota().poll_once();
     CHECK(ota_mock_mark_valid_calls() == 1, "200 -> образ подтверждён");
-    CHECK(ota_mock_mark_valid_calls() == 1, "повторный ответ образ не подтверждает второй раз");
+    /* Пункт 21 ревью П8: раньше здесь стояла вторая такая же проверка БЕЗ
+     * второго опроса — она не могла упасть. Теперь опрос действительно
+     * повторяется: флаг PENDING_VERIFY снят, второго mark_valid быть не должно. */
+    kouki::ota().poll_once();
+    CHECK(ota_mock_mark_valid_calls() == 1,
+          "повторный ответ образ не подтверждает второй раз");
 
     http_mock_reset();
     http_mock_set_response(500, "");
@@ -485,6 +492,185 @@ static void test_poll_http_client_null()
     CHECK(ota_mock_begin_calls() == 0, "установка не начата");
 }
 
+/*
+ * Пункт 17 ревью П8 (мутант a): sha256 в ВЕРХНЕМ регистре.
+ * Модуль сверяет хеш через strcasecmp, но стенд подавал только нижний
+ * регистр — замена на strcmp оставалась незамеченной.
+ */
+static void test_update_uppercase_sha()
+{
+    std::printf("[TEST] 25. Установка: sha256 в верхнем регистре принимается...\n");
+
+    reset_all();
+    /* kImageSha — указатель, поэтому sizeof(kImageSha) == 8: буфер задаём по
+     * длине hex-строки sha256 (64 символа + завершающий ноль). */
+    char upper[65];
+    std::snprintf(upper, sizeof(upper), "%s", kImageSha);
+    for (char *p = upper; *p != '\0'; p++) {
+        if (*p >= 'a' && *p <= 'f') {
+            *p = (char)(*p - 'a' + 'A');
+        }
+    }
+    CHECK(std::strcmp(upper, kImageSha) != 0, "хеш действительно переведён в верхний регистр");
+
+    ota_mock_set_image(kImage, sizeof(kImage));
+    ota_mock_set_perform(0, ESP_OK);
+    CHECK(kouki::ota().update("/fw.bin", upper) == ESP_OK,
+          "верхний регистр sha256 принимается (сверка регистронезависима)");
+    CHECK(ota_mock_finish_calls() == 1, "образ установлен");
+}
+
+/*
+ * Пункт 18 ревью П8 (мутант b): 401 — ветка отказа токена.
+ * Проверяется и наблюдаемый эффект (тело не читают, установки нет), и текст
+ * предупреждения: без перехвата логов подмена «токен не принят» не видна.
+ */
+static void test_poll_401_logs()
+{
+    std::printf("[TEST] 26. Опрос: 401 пишет предупреждение про токен...\n");
+
+    reset_all();
+    http_mock_set_response(401, "{\"error\":\"unauthorized\"}");
+    kouki_test_log_clear();
+    kouki::ota().poll_once();
+
+    CHECK(kouki_test_log_contains("токен не принят (HTTP 401)"),
+          "401 попал в лог с текстом про токен");
+    CHECK(!kouki_test_log_contains("сервер вернул статус 401"),
+          "401 не уходит в общую ветку «обновлений нет»");
+    CHECK(http_mock_read_calls() == 0, "тело 401 не читают");
+    CHECK(ota_mock_begin_calls() == 0, "установка не начата");
+}
+
+/*
+ * Пункт 19 ревью П8 (мутанты c/d): порог 60 с и однократность лога.
+ * Раньше проверялось только «нет mark_valid», а сам порог не проверялся:
+ * 59999 мс — тишина, 60001 мс — одно предупреждение, дальше — тишина.
+ */
+static void test_verify_timeout_threshold()
+{
+    std::printf("[TEST] 27. PENDING_VERIFY: порог 60 с и однократность лога...\n");
+
+    reset_all();
+    ota_mock_set_image_state(ESP_OTA_IMG_PENDING_VERIFY);
+    CHECK(kouki_ota_init() == ESP_OK, "init() -> ESP_OK");
+
+    /*
+     * ВАЖНО: флаг «предупреждение уже напечатано» в master — статическая
+     * переменная, которая не сбрасывается ни init(), ни подтверждением образа
+     * (db4bd1b:30). В классе он тоже живёт до конца процесса, поэтому тест
+     * обязан идти ПЕРВЫМ среди тестов PENDING_VERIFY: иначе флаг уже взведён
+     * предыдущим кейсом. Поведение 1:1 с master, чинить в миграции нечего.
+     */
+
+    // 59999 мс: порог ещё не пройден — лога быть не должно.
+    ota_mock_advance_ticks(59999);
+    kouki_test_log_clear();
+    kouki::ota().poll_verify_timeout();
+    CHECK(!kouki_test_log_contains("60 с прошло без связи с сервером"),
+          "за 1 мс до порога предупреждения нет");
+
+    // +2 мс: 60001 — порог пройден, предупреждение одно.
+    ota_mock_advance_ticks(2);
+    kouki_test_log_clear();
+    kouki::ota().poll_verify_timeout();
+    CHECK(kouki_test_log_contains("60 с прошло без связи с сервером"),
+          "после порога предупреждение есть");
+    CHECK(kouki_test_log_contains("PENDING_VERIFY"), "в предупреждении сказано про PENDING_VERIFY");
+
+    // Повторные вызовы молчат: флаг взведён.
+    ota_mock_advance_ticks(120000);
+    kouki_test_log_clear();
+    kouki::ota().poll_verify_timeout();
+    kouki::ota().poll_verify_timeout();
+    CHECK(kouki_test_log_count() == 0, "предупреждение печатается один раз");
+    CHECK(ota_mock_mark_valid_calls() == 0, "таймаут не подтверждает образ сам");
+}
+
+/*
+ * Пункт 20 ревью П8 (мутанты e/f/g/h/i): остальные ветки.
+ * mark_valid ошибка, cert_pem в конфигурации проверки, 304 (общая ветка
+ * status_code != 200) и отказ xTaskCreate.
+ */
+static void test_poll_mark_valid_error_and_cert()
+{
+    std::printf("[TEST] 28. PENDING_VERIFY: ошибка подтверждения слышна в логе...\n");
+
+    reset_all();
+    ota_mock_set_image_state(ESP_OTA_IMG_PENDING_VERIFY);
+    ota_mock_fail_mark_valid(ESP_FAIL);
+    CHECK(kouki_ota_init() == ESP_OK, "init() -> ESP_OK");
+
+    http_mock_set_response(200, "{\"update\":false}");
+    kouki_test_log_clear();
+    kouki::ota().poll_once();
+    CHECK(ota_mock_mark_valid_calls() == 1, "подтверждение вызвано один раз");
+    CHECK(kouki_test_log_contains("не удалось подтвердить образ"),
+          "ошибка подтверждения не теряется: есть текст лога");
+    CHECK(kouki_test_log_contains("ESP_FAIL"), "в логе код ошибки, а не пустая строка");
+}
+
+static void test_poll_cert_pem_and_status()
+{
+    std::printf("[TEST] 29. Опрос: cert_pem из Config, 304 — тихая ветка...\n");
+
+    reset_all();
+    http_mock_set_response(200, "{\"update\":false}");
+    kouki::ota().poll_once();
+
+    const esp_http_client_config_t *cfg = http_mock_last_config();
+    CHECK(cfg != NULL, "конфигурация клиента видна стенду");
+    if (cfg != NULL) {
+        CHECK(cfg->cert_pem == kouki::config().effective_ca_pem(),
+              "cert_pem = Config::effective_ca_pem() (вшитый корневой CA)");
+        CHECK(cfg->cert_pem != NULL, "cert_pem не NULL");
+    }
+
+    http_mock_reset();
+    http_mock_set_response(304, "");
+    kouki_test_log_clear();
+    kouki::ota().poll_once();
+    CHECK(ota_mock_begin_calls() == 0, "304 не запускает установку");
+    CHECK(kouki_test_log_contains("сервер вернул статус 304"),
+          "304 попадает в общую ветку «обновлений нет»");
+}
+
+static void test_init_task_create_failure()
+{
+    std::printf("[TEST] 30. init(): отказ xTaskCreate пробрасывается...\n");
+
+    reset_all();
+    ota_mock_set_image_state(ESP_OTA_IMG_VALID);
+    ota_mock_fail_task_create(0);  // 0 == pdFAIL
+
+    kouki_test_log_clear();
+    CHECK(kouki_ota_init() == ESP_FAIL, "отказ создания задачи -> ESP_FAIL");
+    CHECK(ota_mock_task_create_calls() == 1, "попытка создания была");
+    CHECK(kouki_test_log_contains("не удалось создать задачу OTA"),
+          "отказ задачи попал в лог");
+}
+
+/*
+ * Пункт 21 ревью П8: часы и задержка задачи — раньше объявлены, но не
+ * проверялись; заодно фиксируется пауза после подъёма сети (2000 мс).
+ */
+static void test_task_clock_and_delay()
+{
+    std::printf("[TEST] 31. Задача OTA: часы и пауза после сети...\n");
+
+    reset_all();
+    CHECK(kouki_ota_init() == ESP_OK, "init() -> ESP_OK");
+
+    const uint32_t t0 = ota_mock_ticks();
+    ota_mock_advance_ticks(1500);
+    CHECK(ota_mock_ticks() == t0 + 1500, "часы стенда двигаются на заданную величину");
+
+    // Пауза после подъёма сети объявлена константой 2000 мс.
+    ota_stubs_reset();
+    CHECK(kouki_ota_init() == ESP_OK, "повторный init() -> ESP_OK");
+    CHECK(ota_mock_task_create_calls() >= 1, "задача создана");
+}
+
 // ---------------------------------------------------------------- фасад -----
 
 static void test_facade()
@@ -515,6 +701,7 @@ int main()
     test_semver();
     test_pending_verify_confirm();
     test_pending_verify_confirm_error();
+    test_verify_timeout_threshold();
     test_verify_timeout();
     test_no_pending_verify();
     test_update_success();
@@ -536,6 +723,12 @@ int main()
     test_poll_new_version();
     test_poll_http_client_null();
     test_facade();
+    test_update_uppercase_sha();
+    test_poll_401_logs();
+    test_poll_mark_valid_error_and_cert();
+    test_poll_cert_pem_and_status();
+    test_init_task_create_failure();
+    test_task_clock_and_delay();
 
     std::printf("=== Ota: %d проверок PASS ===\n", g_checks);
     return 0;

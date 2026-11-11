@@ -88,8 +88,8 @@ int ota_mock_task_create_calls(void);
 int ota_mock_task_stack(void);
 int ota_mock_task_priority(void);
 
-/** Выполнить сохранённую задачу OTA (в образе её крутит FreeRTOS). */
-void ota_mock_run_task(void);
+/** Следующий xTaskCreate вернёт заданный код (pdPASS — успех, 0 — ошибка). */
+void ota_mock_fail_task_create(int ret);
 
 /** Сдвинуть «часы» вперёд (xTaskGetTickCount вернёт эту величину, в мс). */
 void ota_mock_advance_ticks(uint32_t ms);

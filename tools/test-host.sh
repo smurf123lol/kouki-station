@@ -355,14 +355,17 @@ run "ota sha256" "$CC" -std=gnu11 -Wall -Wextra -I"$OTA" -I"$SUPPORT" \
     -c "$OTA/sha256_mock.c" -o "$OBJ_DIR/sha256_mock.o"
 run "ota stubs" "$CC" -std=gnu11 -Wall -Wextra -I"$OTA" -I"$SUPPORT" -I"$MAIN" \
     -c "$OTA/ota_stubs.c" -o "$OBJ_DIR/ota_stubs.o"
+# -DKOUKI_TEST_LOG_CAPTURE: тексты логов OTA (401, ошибка подтверждения,
+# отказ задачи, порог 60 с) — наблюдаемый эффект ветки, без перехвата их не
+# проверить.
 run "ota build" "$CXX" -std=c++17 -Wall -Wextra \
     -I"$OTA" -I"$HTTP_MOCK" -I"$WIFI" -I"$CFG_MOCK" -I"$SUPPORT" \
-    -I"$MAIN" -I"$CJSON_DIR" \
+    -I"$MAIN" -I"$CJSON_DIR" -DKOUKI_TEST_LOG_CAPTURE \
     "$TEST/test_ota.cpp" \
     "$MAIN/app_ota.cpp" "$MAIN/app_wifi.cpp" "$MAIN/app_config.cpp" \
     "$MAIN/app_http.cpp" "$MAIN/app_time.cpp" \
     "$OBJ_DIR/ota_mock.o" "$OBJ_DIR/sha256_mock.o" "$OBJ_DIR/ota_stubs.o" \
-    "$OBJ_DIR/http_mock.o" "$OBJ_DIR/wifi_mock.o" \
+    "$OBJ_DIR/http_mock.o" "$OBJ_DIR/wifi_mock.o" "$OBJ_DIR/log_capture.o" \
     "$OBJ_DIR/nvs_mock.o" "$OBJ_DIR/mbedtls_mock.o" "$OBJ_DIR/config_stubs.o" "$OBJ_DIR/root_pem.o" \
     "$OBJ_DIR/cJSON.o" \
     -lm \
